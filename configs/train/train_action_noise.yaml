@@ -45,6 +45,7 @@ model:
 action:
   action_type: "eef_delta"
   action_stat_path: null
+  action_dim: 14
 
 # ============================================================================
 # Training Configuration

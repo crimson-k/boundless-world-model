@@ -89,6 +89,9 @@ action:
   # [OPTIONAL] Path to robot normalization stats (stat.json).
   action_stat_path: null
 
+  # [OPTIONAL] Action dimension.
+  action_dim: 14
+
 # ============================================================================
 # Training Configuration
 # ============================================================================
