@@ -1,35 +1,33 @@
 import argparse
-import json
 import os
-import yaml
+from omegaconf import OmegaConf
+
 
 def merge_yaml_and_args(yaml_path, parser, args):
     # priority: CLI args > YAML config > parser defaults
     if not yaml_path or not os.path.exists(yaml_path):
         return args
 
-    with open(yaml_path, "r", encoding="utf-8") as f:
-        yaml_dict = yaml.safe_load(f) or {}
+    yaml_dict = OmegaConf.to_container(OmegaConf.load(yaml_path), resolve=True) or {}
 
     cli_overrides = {}
     for key, value in vars(args).items():
         if value != parser.get_default(key):
             cli_overrides[key] = value
-
-    for key, value in yaml_dict.items():
-        if key not in cli_overrides:
-            setattr(args, key, value)
+            
+    for section in yaml_dict.values():
+        if isinstance(section, dict):
+            for key, value in section.items():
+                if key not in cli_overrides and hasattr(args, key):
+                    setattr(args, key, value)
 
     return args
 
 
 def prepare_runtime_config(args):
-    cfg = {}
     model_config_path = getattr(args, "model_config_path", "")
-    if model_config_path and os.path.exists(model_config_path):
-        with open(model_config_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
-
+    cfg = OmegaConf.to_container(OmegaConf.load(model_config_path), resolve=True)
+    
     enabled_mods = [m for m in ["dit", "vae", "image"] if getattr(args, f"enable_{m}", True)]
     
     text_mode = getattr(args, "text_mode", "emb")
@@ -60,6 +58,7 @@ def prepare_runtime_config(args):
         "model_paths_list": paths_list,
         "tokenizer_path": tokenizer_path,
         "data_file_keys": data_keys,
+        "text_enabled": text_mode != "none",
         "action_enabled": action_mode != "none"
     }
 
