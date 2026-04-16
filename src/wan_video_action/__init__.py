@@ -1,4 +1,4 @@
-__version__ = "0.1.0"
+__version__ = "0.1.0-debug"
 
 from .pipelines.wan_video_action import (
     build_wan_video_action_pipeline,
