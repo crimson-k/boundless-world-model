@@ -95,6 +95,7 @@ def add_model_config(parser: argparse.ArgumentParser):
     group.add_argument("--model_config_path", type=str, default="configs/model/wan2_1_fun_1_3b_inp.yaml", help="[KEY] Path to model config YAML.")
     group.add_argument("--initialize_model_on_cpu", action="store_true", default=False, help="[OPTIONAL] Whether to initialize models on CPU.")
     group.add_argument("--text_mode", type=str, default="emb", choices=["t5", "emb", "none"], help="[KEY] Execution mode for the text module: 't5' (full inference), 'emb' (use pre-extracted embeddings), 'none' (disabled).")
+    group.add_argument("--enable_text", action="store_true", default=True, help="[OPTIONAL] Enable text encoder.")
     group.add_argument("--enable_dit", action="store_true", default=True, help="[OPTIONAL] Enable DiT diffusion model.")
     group.add_argument("--enable_vae", action="store_true", default=True, help="[OPTIONAL] Enable VAE model.")
     group.add_argument("--enable_image", action="store_true", default=True, help="[OPTIONAL] Enable image encoder (CLIP).")

@@ -64,8 +64,11 @@ model:
   # [OPTIONAL] Whether to initialize models on CPU.
   initialize_model_on_cpu: false
 
-  # [KEY] Execution mode for the text module: 't5' (full inference), 'emb' (use pre-extracted embeddings), 'none' (disabled). 
+  # [KEY] Execution mode for the text module: 't5' (full inference), 'emb' (use pre-extracted embeddings), 'none' (disabled).
   text_mode: "emb"
+
+  # [OPTIONAL] Enable text encoder.
+  enable_text: true
 
   # [OPTIONAL] Enable DiT diffusion model.
   enable_dit: true

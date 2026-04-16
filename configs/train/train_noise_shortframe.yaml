@@ -34,6 +34,7 @@ model:
   model_config_path: "configs/model/wan2_1_fun_1_3b_inp.yaml"
   initialize_model_on_cpu: false
   text_mode: "emb"
+  enable_text: true
   enable_dit: true
   enable_vae: true
   enable_image: true
