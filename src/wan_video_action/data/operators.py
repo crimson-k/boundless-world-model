@@ -466,25 +466,6 @@ class LoadCobotAction(DataProcessingOperator):
 def create_video_operator(base_path, height, width, max_pixels, num_frames,
                           height_division_factor, width_division_factor,
                           time_division_factor, time_division_remainder, resize_mode="fit", default_key="data"):
-    """Create video operator that supports multi-view videos (list of paths).
-
-    This replicates lzr's default_video_operator behavior with multi-view support.
-
-    Args:
-        base_path: Base directory for resolving relative paths
-        height: Target height (None for dynamic)
-        width: Target width (None for dynamic)
-        max_pixels: Maximum pixels for dynamic resolution
-        num_frames: Number of frames to load
-        height_division_factor: Height must be divisible by this
-        width_division_factor: Width must be divisible by this
-        time_division_factor: Frame count must be divisible by this
-        time_division_remainder: Frame count remainder requirement
-        resize_mode: "fit" or "crop" resize behavior
-
-    Returns:
-        DataProcessingOperator that loads and processes video data
-    """
     image_processor = ImageCropAndResize(height, width, max_pixels, height_division_factor, width_division_factor, resize_mode=resize_mode)
     
     image_pipeline = ToAbsolutePathByKeyExtension(base_path) >> LoadImage() >> image_processor >> ToList()
