@@ -463,9 +463,13 @@ class LoadCobotAction(DataProcessingOperator):
         return arr[None, ...]
 
 
-def create_video_operator(base_path, height, width, max_pixels, num_frames,
-                          height_division_factor, width_division_factor,
-                          time_division_factor, time_division_remainder, resize_mode="fit", default_key="data"):
+def create_video_operator(
+    base_path="",
+    max_pixels=1920*1080, height=None, width=None,
+    height_division_factor=16, width_division_factor=16,
+    num_frames=81, time_division_factor=4, time_division_remainder=1,
+    resize_mode="fit", default_key="data"
+):
     image_processor = ImageCropAndResize(height, width, max_pixels, height_division_factor, width_division_factor, resize_mode=resize_mode)
     
     image_pipeline = ToAbsolutePathByKeyExtension(base_path) >> LoadImage() >> image_processor >> ToList()
