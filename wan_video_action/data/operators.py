@@ -360,7 +360,7 @@ class LoadCobotAction(DataProcessingOperator):
             joint_delta (原 action_joint：关节相对动作/增量)
             eef_delta (原 action_pose：末端相对动作/增量)
         """
-        # Compatibility aliases for older script conventions.
+        # TODO: Compatibility aliases for older script conventions.
         action_type_alias = {
             "joint_abs": "state_joint",
             "eef_abs": "state_pose",

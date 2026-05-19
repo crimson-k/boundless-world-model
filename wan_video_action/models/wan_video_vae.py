@@ -1,3 +1,5 @@
+# TODO: refactor this VAE wrapper.
+
 import torch
 from einops import rearrange
 

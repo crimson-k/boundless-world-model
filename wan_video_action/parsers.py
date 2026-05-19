@@ -68,7 +68,7 @@ def prepare_runtime_config(args):
 def add_dataset_base_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("dataset")
     group.add_argument("--dataset_base_path", type=str, default="", help="[REQUIRED] Base path of the dataset.")
-    group.add_argument("--dataset_metadata_path", "--metadata_path", dest="dataset_metadata_path", type=str, default=None, help="[OPTIONAL] Path to the metadata file of the dataset.")
+    group.add_argument("--dataset_metadata_path", type=str, default=None, help="[OPTIONAL] Path to the metadata file of the dataset.")
     group.add_argument("--dataset_repeat", type=int, default=1, help="[TUNABLE] Number of times to repeat the dataset per epoch.")
     group.add_argument("--dataset_num_workers", type=int, default=0, help="[OPTIONAL] Number of workers for data loading.")
     group.add_argument("--data_file_keys", type=str, default="image,video", help="[OPTIONAL] Data file keys in the metadata. Comma-separated.")
@@ -86,12 +86,13 @@ def add_video_size_config(parser: argparse.ArgumentParser):
     group.add_argument("--time_division_factor", type=int, default=4, help="[OPTIONAL] Temporal frame divisor used to align video/action frame counts.")
     group.add_argument("--time_division_remainder", type=int, default=1, help="[OPTIONAL] Temporal frame remainder used with time_division_factor.")
     group.add_argument("--spatial_division_factor", type=int, default=32, help="[OPTIONAL] Spatial size divisor used to align frame height and width.")
+    group.add_argument("--chunk_mode", type=str, default="static", choices=["static", "dynamic"], help="[OPTIONAL] Sampling mode for video chunks, static uses dataset bounds and dynamic uses random crop.")
     return parser
 
 
 def add_model_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("model")
-    group.add_argument("--model_paths", "--model_path", dest="model_paths", type=str, default=None, help="[REQUIRED] Paths to load models. In JSON format, comma-separated, or a single model root.")
+    group.add_argument("--model_paths", type=str, default=None, help="[REQUIRED] Paths to load models. In JSON format, comma-separated, or a single model root.")
     group.add_argument("--model_id_with_origin_paths", type=str, default=None, help="[OPTIONAL] Model ID with origin paths, e.g., Wan-AI/Wan2.1-T2V-1.3B:diffusion_pytorch_model*.safetensors. Comma-separated.")
     group.add_argument("--extra_inputs", type=str, default=None, help="[OPTIONAL] Additional model inputs, comma-separated.")
     group.add_argument("--fp8_models", type=str, default=None, help="[OPTIONAL] Models with FP8 precision, comma-separated.")
@@ -133,7 +134,7 @@ def add_training_config(parser: argparse.ArgumentParser):
 
 def add_output_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("output")
-    group.add_argument("--output_path", "--output_dir", dest="output_path", type=str, default="./models", help="[KEY] Output save path.")
+    group.add_argument("--output_path", type=str, default="./models", help="[KEY] Output save path.")
     group.add_argument("--remove_prefix_in_ckpt", type=str, default="pipe.dit.", help='[OPTIONAL] Remove prefix in ckpt. (default: "pipe.dit.")')
     group.add_argument("--save_steps", type=int, default=None, help="[OPTIONAL] Number of checkpoint saving intervals. If None, checkpoints will be saved every epoch.")
     group.add_argument("--ckpt_path", type=str, default=None, help="[OPTIONAL] Path to model checkpoint (.safetensors) used to initialize training weights (model-only resume).")
@@ -171,7 +172,7 @@ def add_tracking_config(parser: argparse.ArgumentParser):
 
 def add_infer_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("infer")
-    group.add_argument("--cfg_scale", type=float, default=1.0, help="[OPTIONAL] CFG scale for generation.")
+    group.add_argument("--cfg_scale", type=float, default=5.0, help="[OPTIONAL] CFG scale for generation.")
     group.add_argument("--num_inference_steps", type=int, default=50, help="[OPTIONAL] Number of inference steps.")
     group.add_argument("--negative_prompt", type=str, default="The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion", help="[OPTIONAL] Negative prompt for generation.")
     group.add_argument("--negative_prompt_emb", type=str, default=None, help="[OPTIONAL] Path to the pre-extracted negative prompt embedding.")
