@@ -31,7 +31,9 @@ def prepare_runtime_config(args):
     enabled_mods = [m for m in ["dit", "vae", "image"] if getattr(args, f"enable_{m}", True)]
     
     text_mode = getattr(args, "text_mode", "emb")
-    enabled_mods.append("text" if text_mode == "t5" else f"text:{text_mode}")
+    text_enabled = getattr(args, "enable_text", True) and text_mode != "none"
+    if text_enabled:
+        enabled_mods.append("text" if text_mode == "t5" else f"text:{text_mode}")
     
     action_mode = getattr(args, "action_mode", "none")
     if action_mode != "none":
@@ -46,7 +48,7 @@ def prepare_runtime_config(args):
     ]
 
     tokenizer_path = None
-    if text_mode == "t5" and model_paths:
+    if text_enabled and text_mode == "t5" and model_paths:
         subdir = getattr(args, "tokenizer_subdir", cfg.get("tokenizer_subdir", "tokenizer"))
         tokenizer_path = os.path.join(model_paths, subdir)
 
@@ -58,7 +60,7 @@ def prepare_runtime_config(args):
         "model_paths_list": paths_list,
         "tokenizer_path": tokenizer_path,
         "data_file_keys": data_keys,
-        "text_enabled": text_mode != "none",
+        "text_enabled": text_enabled,
         "action_enabled": action_mode != "none"
     }
 
@@ -81,13 +83,16 @@ def add_video_size_config(parser: argparse.ArgumentParser):
     group.add_argument("--num_frames", type=int, default=81, help="[KEY] Number of frames per video. Frames are sampled from the video prefix.")
     group.add_argument("--resize_mode", type=str, default="fit", choices=["crop", "fit"], help="[OPTIONAL] Resize behavior: crop (center crop), fit (no crop).")
     group.add_argument("--num_history_frames", type=int, default=1, help="[KEY] Number of conditioning history frames. Must satisfy 1 <= num_history_frames < num_frames.")
+    group.add_argument("--time_division_factor", type=int, default=4, help="[OPTIONAL] Temporal frame divisor used to align video/action frame counts.")
+    group.add_argument("--time_division_remainder", type=int, default=1, help="[OPTIONAL] Temporal frame remainder used with time_division_factor.")
+    group.add_argument("--spatial_division_factor", type=int, default=32, help="[OPTIONAL] Spatial size divisor used to align frame height and width.")
     group.add_argument("--chunk_mode", type=str, default="static", choices=["static", "dynamic"], help="[OPTIONAL] Sampling mode for video chunks, static uses dataset bounds and dynamic uses random crop.")
     return parser
 
 
 def add_model_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("model")
-    group.add_argument("--model_paths", type=str, default=None, help="[REQUIRED] Paths to load models. In JSON format.")
+    group.add_argument("--model_paths", type=str, default=None, help="[REQUIRED] Paths to load models. In JSON format, comma-separated, or a single model root.")
     group.add_argument("--model_id_with_origin_paths", type=str, default=None, help="[OPTIONAL] Model ID with origin paths, e.g., Wan-AI/Wan2.1-T2V-1.3B:diffusion_pytorch_model*.safetensors. Comma-separated.")
     group.add_argument("--extra_inputs", type=str, default=None, help="[OPTIONAL] Additional model inputs, comma-separated.")
     group.add_argument("--fp8_models", type=str, default=None, help="[OPTIONAL] Models with FP8 precision, comma-separated.")
@@ -175,6 +180,8 @@ def add_infer_config(parser: argparse.ArgumentParser):
     group.add_argument("--disable_chunk_infer", dest="chunk_infer", action="store_false", default=True, help="[OPTIONAL] Disable chunked inference with 81-frame segments.")
     group.add_argument("--fps", type=int, default=24, help="[OPTIONAL] Output video FPS.")
     group.add_argument("--disable_metrics", dest="enable_metrics", action="store_false", default=True, help="[OPTIONAL] Disable evaluation metrics.")
+    group.add_argument("--start_index", type=int, default=0, help="[OPTIONAL] First metadata row index to process.")
+    group.add_argument("--max_samples", type=int, default=0, help="[OPTIONAL] Maximum number of metadata rows to process. 0 means all.")
     return parser
 
 
