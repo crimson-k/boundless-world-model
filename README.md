@@ -187,7 +187,11 @@ Download the [Wan2.2-TI2V-5B](https://www.modelscope.cn/models/Wan-AI/Wan2.2-TI2
 modelscope download --model Wan-AI/Wan2.2-TI2V-5B --local_dir models/Wan2.2-TI2V-5B
 ```
 
-BWM checkpoint: Coming soon !
+Download the [BWM checkpoint](https://huggingface.co/BLM-Lab/Boundless-World-Model) from [Hugging Face](https://huggingface.co):
+
+```bash
+hf download BLM-Lab/Boundless-World-Model step-12000.safetensors --local-dir ckpt/BLM
+```
 
 #### Run Inference
 
