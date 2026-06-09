@@ -10,7 +10,6 @@ from diffsynth.core import ModelConfig, load_state_dict
 from diffsynth.models.wan_video_dit import sinusoidal_embedding_1d
 
 from ..models.wan_video_action_encoder import WanVideoActionEncoder
-from ..models.wan_video_vae import apply_wan_vae_compat
 
 
 def _prepare_history_condition_latents(
@@ -219,17 +218,21 @@ def load_checkpoint_weights(pipe, ckpt_path: str):
     dit = pipe.dit
     action_encoder = pipe.action_encoder
 
-    action_prefix = "pipe.action_encoder."
+    action_prefixes = ("pipe.action_encoder.", "action_encoder.")
+    dit_prefix = "pipe.dit."
     action_state = {
-        key[len(action_prefix):]: value
+        key[len(prefix):]: value
         for key, value in state_dict.items()
-        if key.startswith(action_prefix)
+        for prefix in action_prefixes
+        if key.startswith(prefix)
     }
-    dit_state = {
-        key: value
-        for key, value in state_dict.items()
-        if not key.startswith(action_prefix)
-    }
+    dit_state = {}
+    for key, value in state_dict.items():
+        if any(key.startswith(prefix) for prefix in action_prefixes):
+            continue
+        if key.startswith(dit_prefix):
+            key = key[len(dit_prefix):]
+        dit_state[key] = value
 
     dit_result = dit.load_state_dict(dit_state, strict=False)
     print(
@@ -237,11 +240,15 @@ def load_checkpoint_weights(pipe, ckpt_path: str):
         f"(missing={len(dit_result.missing_keys)}, unexpected={len(dit_result.unexpected_keys)})"
     )
 
-    action_result = action_encoder.load_state_dict(action_state, strict=False)
-    print(
-        f"  - Loaded action_encoder keys: {len(action_state)} "
-        f"(missing={len(action_result.missing_keys)}, unexpected={len(action_result.unexpected_keys)})"
-    )
+    if action_state:
+        try:
+            action_result = action_encoder.load_state_dict(action_state, strict=False, assign=True)
+        except TypeError:
+            action_result = action_encoder.load_state_dict(action_state, strict=False)
+        print(
+            f"  - Loaded action_encoder keys: {len(action_state)} "
+            f"(missing={len(action_result.missing_keys)}, unexpected={len(action_result.unexpected_keys)})"
+        )
 
 
 def build_wan_video_action_pipeline(
@@ -263,14 +270,11 @@ def build_wan_video_action_pipeline(
         redirect_common_files=redirect_common_files,
         vram_limit=vram_limit,
     )
-    apply_wan_vae_compat(pipe.vae)
-
     configure_ti2v_text_off_dit(pipe.dit)
 
     pipe.action_encoder = WanVideoActionEncoder(
         action_dim=int(action_dim),
         dim=pipe.dit.dim,
-        num_action_per_chunk=81,
     )
     pipe.action_encoder = pipe.action_encoder.to(dtype=pipe.torch_dtype, device=pipe.device)
     pipe.action_encoder.eval()
@@ -315,7 +319,7 @@ class WanVideoUnit_ActionEmbedder(PipelineUnit):
                 f"Action sequence too short for latent groups: action_frames={current_action_frames}, "
                 f"required={target_action_frames}, target_groups={target_groups}"
             )
-        action_emb, action_mod_emb = pipe.action_encoder.encode_ti2v2(action)
+        action_emb, action_mod_emb = pipe.action_encoder(action)
         return {"action_emb": action_emb, "action_mod_emb": action_mod_emb}
 
 

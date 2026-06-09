@@ -75,25 +75,43 @@ class LoadVideoChunk(DataProcessingOperator, FrameSamplerByRateMixin):
         # frame_processor is build in the video loader for high efficiency.
         self.frame_processor = frame_processor
 
-    def __call__(self, data, start_frame=None, end_frame=None):
+    def _resolve_video_info(self, data, start_frame=None, end_frame=None, frame_indices=None):
         if isinstance(data, dict):
             path = data.get("data")
             start_frame = start_frame if start_frame is not None else data.get("start_frame")
             end_frame = end_frame if end_frame is not None else data.get("end_frame")
+            frame_indices = frame_indices if frame_indices is not None else data.get("frame_indices")
         else:
-            raise TypeError(f"Expected 'data' to be a dict, but received {type(data).__name__}.")
-            
+            path = data
+
+        if not path:
+            raise KeyError("Missing video path in metadata 'data' field.")
+
         path = resolve_path(self.base_path, path)
-            
+        if frame_indices is not None:
+            frame_indices = [int(frame_id) for frame_id in frame_indices]
+        return path, start_frame, end_frame, frame_indices
+
+    def __call__(self, data, start_frame=None, end_frame=None, frame_indices=None):
+        path, start_frame, end_frame, frame_indices = self._resolve_video_info(
+            data, start_frame=start_frame, end_frame=end_frame, frame_indices=frame_indices
+        )
         reader = self.get_reader(path)
+        frames = []
+        if frame_indices is not None:
+            for frame_id in frame_indices:
+                frame = reader.get_data(frame_id)
+                frame = Image.fromarray(frame)
+                frame = self.frame_processor(frame)
+                frames.append(frame)
+            reader.close()
+            return frames
+
         raw_frame_rate = reader.get_meta_data()['fps']
         total_raw_frames = reader.count_frames()
-        
-        start = max(0, start_frame if start_frame is not None else 0)
-        end = min(total_raw_frames, end_frame if end_frame is not None else total_raw_frames)
-        clip_frames = max(0, end - start)
-
-        # x / clip_frames = self.frame_rate / raw_frame_rate
+        start = max(0, int(start_frame) if start_frame is not None else 0)
+        end = min(total_raw_frames - 1, int(end_frame) if end_frame is not None else total_raw_frames - 1)
+        clip_frames = max(0, end - start + 1)
         available_frames = int(clip_frames * self.frame_rate / raw_frame_rate) if self.fix_frame_rate else clip_frames
         num_frames = self.num_frames
         if available_frames < num_frames:
@@ -103,7 +121,6 @@ class LoadVideoChunk(DataProcessingOperator, FrameSamplerByRateMixin):
                 time_division_remainder=self.time_division_remainder,
             )
         
-        frames = []
         for frame_id in range(num_frames):
             frame_id = self.map_single_frame_id(frame_id, raw_frame_rate, clip_frames)
             frame = reader.get_data(start + frame_id)
@@ -133,26 +150,44 @@ class LoadGIFChunk(DataProcessingOperator):
             )
         return num_frames
         
-    def __call__(self, data, start_frame=None, end_frame=None):
+    def _resolve_gif_info(self, data, start_frame=None, end_frame=None, frame_indices=None):
         if isinstance(data, dict):
             path = data.get("data")
             start_frame = start_frame if start_frame is not None else data.get("start_frame")
             end_frame = end_frame if end_frame is not None else data.get("end_frame")
+            frame_indices = frame_indices if frame_indices is not None else data.get("frame_indices")
         else:
-            raise TypeError(f"Expected 'data' to be a dict, but received {type(data).__name__}.")
-            
+            path = data
+
+        if not path:
+            raise KeyError("Missing GIF path in metadata 'data' field.")
+
         path = resolve_path(self.base_path, path)
-            
+        if frame_indices is not None:
+            frame_indices = [int(frame_id) for frame_id in frame_indices]
+        return path, start_frame, end_frame, frame_indices
+
+    def __call__(self, data, start_frame=None, end_frame=None, frame_indices=None):
+        path, start_frame, end_frame, frame_indices = self._resolve_gif_info(
+            data, start_frame=start_frame, end_frame=end_frame, frame_indices=frame_indices
+        )
         images = iio.imread(path, mode="RGB")
         total_raw_frames = len(images)
-        
-        start = max(0, start_frame if start_frame is not None else 0)
-        end = min(total_raw_frames, end_frame if end_frame is not None else total_raw_frames)
-        clip_frames = max(0, end - start)
+        if frame_indices is not None:
+            frames = []
+            for frame_id in frame_indices:
+                frame = Image.fromarray(images[frame_id])
+                frame = self.frame_processor(frame)
+                frames.append(frame)
+            return frames
+
+        start = max(0, int(start_frame) if start_frame is not None else 0)
+        end = min(total_raw_frames - 1, int(end_frame) if end_frame is not None else total_raw_frames - 1)
+        clip_frames = max(0, end - start + 1)
 
         num_frames = self.get_num_frames(clip_frames)
         frames = []
-        for img in images[start : start + num_frames]:
+        for img in images[start: start + num_frames]:
             frame = Image.fromarray(img)
             frame = self.frame_processor(frame)
             frames.append(frame)
@@ -361,6 +396,7 @@ class LoadCobotAction(DataProcessingOperator):
             eef_delta (原 action_pose：末端相对动作/增量)
         """
         # TODO: Compatibility aliases for older script conventions.
+        requested_action_type = action_type
         action_type_alias = {
             "joint_abs": "state_joint",
             "eef_abs": "state_pose",
@@ -385,9 +421,12 @@ class LoadCobotAction(DataProcessingOperator):
 
         entry = None
         if isinstance(self.stat, dict):
-            if action_type in self.stat and isinstance(self.stat[action_type], dict):
-                entry = self.stat[action_type]
-            elif all(k in self.stat for k in ("min", "max")):
+            stat_keys = (action_type, requested_action_type)
+            for stat_key in stat_keys:
+                if stat_key in self.stat and isinstance(self.stat[stat_key], dict):
+                    entry = self.stat[stat_key]
+                    break
+            if entry is None and all(k in self.stat for k in ("min", "max")):
                 # Backward-compat mode: accept direct per-type dict payload.
                 entry = self.stat
 
@@ -407,13 +446,15 @@ class LoadCobotAction(DataProcessingOperator):
                 self._stat_min = np.asarray(entry.get("min", []), dtype=np.float32)
                 self._stat_max = np.asarray(entry.get("max", []), dtype=np.float32)
 
-    def _resolve_parquet_info(self, data, start_frame, end_frame):
+    def _resolve_parquet_info(self, data, start_frame, end_frame, frame_indices=None):
         if isinstance(data, dict):
             parquet_rel = data.get("data")
             if start_frame is None:
                 start_frame = data.get("start_frame")
             if end_frame is None:
                 end_frame = data.get("end_frame")
+            if frame_indices is None:
+                frame_indices = data.get("frame_indices")
         else:
             parquet_rel = data
         
@@ -422,9 +463,12 @@ class LoadCobotAction(DataProcessingOperator):
         
         parquet_path = resolve_path(self.base_path, parquet_rel)
 
-        start_frame = int(start_frame)
-        end_frame = int(end_frame)
-        return parquet_path, start_frame, end_frame
+        if frame_indices is not None:
+            frame_indices = [int(frame_id) for frame_id in frame_indices]
+        else:
+            start_frame = int(start_frame)
+            end_frame = int(end_frame)
+        return parquet_path, start_frame, end_frame, frame_indices
 
     def _get_min_max(self):
         if self._stat_min is not None and self._stat_max is not None:
@@ -455,6 +499,12 @@ class LoadCobotAction(DataProcessingOperator):
             )
         return np.asarray(data[start:end], dtype=np.float32)
 
+    def _read_indices(self, parquet_path, column, frame_indices):
+        table = pq.read_table(parquet_path, columns=[column])
+        data = table.to_pydict()[column]
+        values = [data[int(frame_id)] for frame_id in frame_indices]
+        return np.asarray(values, dtype=np.float32)
+
     def get_num_frames(self, total_frames):
         if self.num_frames is None:
             return int(total_frames)
@@ -469,13 +519,16 @@ class LoadCobotAction(DataProcessingOperator):
                 )
         return num_frames
 
-    def __call__(self, data: str, start_frame=None, end_frame=None):
-        parquet_path, start_frame, end_frame = self._resolve_parquet_info(
-            data, start_frame, end_frame
+    def __call__(self, data: str, start_frame=None, end_frame=None, frame_indices=None):
+        parquet_path, start_frame, end_frame, frame_indices = self._resolve_parquet_info(
+            data, start_frame, end_frame, frame_indices=frame_indices
         )
-        num_frames = self.get_num_frames(end_frame - start_frame + 1)
         column = "observation.state" if self.use_state else "action"
-        arr = self._read_slice(parquet_path, column, start_frame, num_frames)
+        if frame_indices is None:
+            num_frames = self.get_num_frames(end_frame - start_frame + 1)
+            arr = self._read_slice(parquet_path, column, start_frame, num_frames)
+        else:
+            arr = self._read_indices(parquet_path, column, frame_indices)
         if arr.ndim != 2:
             raise ValueError(f"Unexpected action shape {arr.shape} in {parquet_path}")
         if arr.shape[1] == len(JOINT_AND_EEF_NAMES):
@@ -502,7 +555,7 @@ def create_video_operator(
 ):
     image_processor = ImageCropAndResize(height, width, max_pixels, height_division_factor, width_division_factor, resize_mode=resize_mode)
     
-    image_pipeline = ToAbsolutePathByKeyExtension(base_path) >> LoadImage() >> image_processor >> ToList()
+    image_pipeline = ToAbsolutePathByKeyExtension(base_path, key=default_key) >> LoadImage() >> image_processor >> ToList()
     
     gif_pipeline = LoadGIFChunk(base_path=base_path, num_frames=num_frames, time_division_factor=time_division_factor, time_division_remainder=time_division_remainder, frame_processor=image_processor)
     video_pipeline = LoadVideoChunk(base_path=base_path, num_frames=num_frames, time_division_factor=time_division_factor, time_division_remainder=time_division_remainder, frame_processor=image_processor)

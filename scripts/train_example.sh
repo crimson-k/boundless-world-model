@@ -1,0 +1,41 @@
+#!/bin/bash
+set -euo pipefail
+
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export TOKENIZERS_PARALLELISM="false"
+
+if [ -f scripts/train_local.sh ]; then
+  source scripts/train_local.sh
+fi
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
+CONFIG_PATH="${CONFIG_PATH:-configs/train/train_wan22_ti2v_5b_action_adaln.yaml}"
+DATASET_NUM_WORKERS="${DATASET_NUM_WORKERS:-8}"
+MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-10000}"
+SAVE_STEPS="${SAVE_STEPS:-5}"
+CKPT_PATH="${CKPT_PATH:-}"
+OUTPUT_PATH="${OUTPUT_PATH:-}"
+
+CMD=(
+  "${PYTHON_BIN}" scripts/train.py
+  --config "${CONFIG_PATH}"
+  --model_paths "${MODEL_DIR}"
+  --dataset_base_path "${DATASET_DIR}"
+  --dataset_metadata_path "${DATASET_METADATA_PATH}"
+  --action_stat_path "${ACTION_STAT_PATH}"
+  --dataset_num_workers "${DATASET_NUM_WORKERS}"
+  --use_gradient_checkpointing
+  --max_train_steps "${MAX_TRAIN_STEPS}"
+  --save_steps "${SAVE_STEPS}"
+)
+
+if [ -n "${OUTPUT_PATH}" ]; then
+  CMD+=(--output_path "${OUTPUT_PATH}")
+fi
+
+if [ -n "${CKPT_PATH}" ]; then
+  CMD+=(--ckpt_path "${CKPT_PATH}")
+fi
+
+"${CMD[@]}"
