@@ -279,7 +279,7 @@ We further thank all project contributors for their valuable discussions, suppor
   - **Innovation**: Wentao Tan, Zengrong Lin, Enci Xie, Baixu Ji
   - **Model Training**: Zengrong Lin, Yang Sun, Zhe Li
 - **Post Training**: Yang Sun, Zengrong Lin, Wentao Tan
-- **Baselines**: Zequn Wang, Heng Zhi, Yipeng Chen, Chenyu Liu
+- **Baselines**: Zequn Wang, Heng Zhi, Yipeng Chen, Chenyu Liu, Wenjie Yang, Hao Xue, Chen Xu
 - **VLAs Support**:
   - **Real-World**: Heng Zhi
   - **Simulation**: Heng Zhi, Baixu Ji
@@ -287,7 +287,6 @@ We further thank all project contributors for their valuable discussions, suppor
   - **Distributed Evaluation**: Wenhao Liu
   - **Real-World Setup**: Zhe Li
 - **Discussion Support**: Fengling Li, Pengfei Zhang, Lanyun Zhu, Ying Cheng, Jingkuan Song, Xing Xu, Yunfan Ren, Qi Zhang
-- **Other Contributions**: Wenjie Yang, Hao Xue, Chen Xu
 
 ---
 
