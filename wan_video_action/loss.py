@@ -17,31 +17,15 @@ def FlowMatchSFTLossWanAction(pipe, **inputs):
     inputs["latents"] = pipe.scheduler.add_noise(input_latents, noise, timestep)
     training_target = pipe.scheduler.training_target(input_latents, noise, timestep)
 
-    history_t = inputs["fused_condition_latent_frames"]
-    inputs["latents"][:, :, :history_t] = input_latents[:, :, :history_t]
-    first_frame_latents = inputs.get("first_frame_latents")
-    if first_frame_latents is not None:
-        inputs["latents"][:, :, :history_t] = first_frame_latents[:, :, :history_t]
-
-    if (
-        getattr(pipe, "action_injection_mode", None) == "adaln"
-        and history_t > 1
-    ):
-        small_timestep_idx = max(0, len(pipe.scheduler.timesteps) - 50)
-        small_timestep = pipe.scheduler.timesteps[small_timestep_idx].unsqueeze(0).to(
-            dtype=pipe.torch_dtype,
-            device=pipe.device,
-        )
-        inputs["latents"][:, :, 1:history_t] = pipe.scheduler.add_noise(
-            input_latents[:, :, 1:history_t],
-            noise[:, :, 1:history_t],
-            small_timestep,
-        )
+    history_t = int(inputs.get("fused_condition_latent_frames") or 0)
+    history_condition_latents = inputs.get("history_condition_latents")
+    if history_t > 0:
+        inputs["latents"][:, :, :history_t] = history_condition_latents[:, :, :history_t]
 
     models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
     noise_pred = pipe.model_fn(**models, **inputs, timestep=timestep)
 
-    if getattr(pipe, "action_injection_mode", None) == "adaln":
+    if getattr(pipe, "action_injection_mode", None) == "adaln" and history_t > 0:
         noise_pred = noise_pred[:, :, history_t:]
         training_target = training_target[:, :, history_t:]
 

@@ -15,8 +15,8 @@ dataset:
 # Video Configuration
 # ============================================================================
 video:
-  height: 672
-  width: 896
+  height: 480
+  width: 640
   max_pixels: 16777216
   num_frames: 81
   resize_mode: "crop"

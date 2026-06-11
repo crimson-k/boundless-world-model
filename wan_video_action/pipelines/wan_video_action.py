@@ -12,62 +12,6 @@ from diffsynth.models.wan_video_dit import sinusoidal_embedding_1d
 from ..models.wan_video_action_encoder import WanVideoActionEncoder
 
 
-def _prepare_history_condition_latents(
-    self: WanVideoPipeline,
-    inputs_shared: dict,
-    *,
-    use_history_condition_noise_in_inference: bool,
-):
-    first_frame_latents = inputs_shared.get("first_frame_latents")
-    if first_frame_latents is None:
-        return None, 0
-    latents = inputs_shared.get("latents")
-    if latents is None:
-        return None, 0
-
-    if first_frame_latents.ndim == 4:
-        first_frame_latents = first_frame_latents.unsqueeze(0)
-
-    history_t = min(int(first_frame_latents.shape[2]), int(latents.shape[2]))
-    if history_t <= 0:
-        return None, 0
-
-    conditioning_latents = first_frame_latents[:, :, :history_t].clone()
-    inputs_shared["latents"][:, :, :history_t] = conditioning_latents
-
-    if (
-        use_history_condition_noise_in_inference
-        and getattr(self, "action_injection_mode", "none") == "adaln"
-        and history_t > 1
-    ):
-        noise = inputs_shared.get("noise")
-        if not isinstance(noise, torch.Tensor):
-            raise RuntimeError("Expected `noise` tensor for history-conditioned inference, but it was missing.")
-        small_timestep_idx = max(0, len(self.scheduler.timesteps) - 50)
-        small_timestep = self.scheduler.timesteps[small_timestep_idx].unsqueeze(0).to(
-            dtype=self.torch_dtype,
-            device=self.device,
-        )
-        conditioning_latents[:, :, 1:history_t] = self.scheduler.add_noise(
-            conditioning_latents[:, :, 1:history_t],
-            noise[:, :, 1:history_t],
-            small_timestep,
-        )
-        inputs_shared["latents"][:, :, 1:history_t] = conditioning_latents[:, :, 1:history_t]
-    return conditioning_latents, history_t
-
-
-def _restore_history_condition_latents(
-    inputs_shared: dict,
-    *,
-    conditioning_latents: Optional[torch.Tensor],
-    history_t: int,
-) -> None:
-    if conditioning_latents is None or history_t <= 0:
-        return
-    inputs_shared["latents"][:, :, :history_t] = conditioning_latents[:, :, :history_t]
-
-
 def _build_wan2_action_units(pipe: WanVideoPipeline):
     selected = [
         unit for unit in pipe.units
@@ -126,22 +70,22 @@ def _install_wan_video_action_call(pipeline: WanVideoPipeline) -> None:
             "tiled": tiled,
             "tile_size": tile_size,
             "tile_stride": tile_stride,
+            "use_history_condition_noise_in_inference": use_history_condition_noise_in_inference,
         }
 
         for unit in self.units:
             inputs_shared, inputs_posi, inputs_nega = self.unit_runner(unit, self, inputs_shared, inputs_posi, inputs_nega)
 
-        conditioning_latents, history_t = _prepare_history_condition_latents(
-            self,
-            inputs_shared,
-            use_history_condition_noise_in_inference=use_history_condition_noise_in_inference,
-        )
+        history_condition_latents = inputs_shared.get("history_condition_latents")
+        history_t = int(inputs_shared.get("fused_condition_latent_frames") or 0)
         self.load_models_to_device(self.in_iteration_models)
         models = {name: getattr(self, name) for name in self.in_iteration_models}
         use_gradient_checkpointing = self.use_gradient_checkpointing
         use_gradient_checkpointing_offload = self.use_gradient_checkpointing_offload
 
         for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
+            if history_t > 0:
+                inputs_shared["latents"][:, :, :history_t] = history_condition_latents[:, :, :history_t]
             timestep = timestep.unsqueeze(0).to(dtype=self.torch_dtype, device=self.device)
             noise_pred_posi = self.model_fn(
                 **models,
@@ -156,11 +100,9 @@ def _install_wan_video_action_call(pipeline: WanVideoPipeline) -> None:
                 self.scheduler.timesteps[progress_id],
                 inputs_shared["latents"],
             )
-            _restore_history_condition_latents(
-                inputs_shared,
-                conditioning_latents=conditioning_latents,
-                history_t=history_t,
-            )
+
+        if history_t > 0:
+            inputs_shared["latents"][:, :, :history_t] = history_condition_latents[:, :, :history_t]
 
         self.load_models_to_device(["vae"])
         latents = inputs_shared["latents"]
@@ -509,7 +451,9 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
                 "precomputed_latents",
                 "input_latents",
                 "latents",
+                "noise",
                 "num_history_frames",
+                "use_history_condition_noise_in_inference",
                 "tiled",
                 "tile_size",
                 "tile_stride",
@@ -517,11 +461,38 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
             output_params=(
                 "latents",
                 "fuse_vae_embedding_in_latents",
-                "first_frame_latents",
+                "history_condition_latents",
                 "fused_condition_latent_frames",
             ),
             onload_model_names=("vae",)
         )
+
+    def _add_history_condition_noise(
+        self,
+        pipe: WanVideoPipeline,
+        history_condition_latents: torch.Tensor,
+        noise: torch.Tensor,
+        history_t: int,
+        use_history_condition_noise_in_inference: bool,
+    ):
+        if not (
+            getattr(pipe, "action_injection_mode", None) == "adaln"
+            and history_t > 1
+            and (pipe.scheduler.training or bool(use_history_condition_noise_in_inference))
+        ):
+            return history_condition_latents
+
+        small_timestep_idx = max(0, len(pipe.scheduler.timesteps) - 50)
+        small_timestep = pipe.scheduler.timesteps[small_timestep_idx].unsqueeze(0).to(
+            dtype=pipe.torch_dtype,
+            device=pipe.device,
+        )
+        history_condition_latents[:, :, 1:history_t] = pipe.scheduler.add_noise(
+            history_condition_latents[:, :, 1:history_t],
+            noise[:, :, 1:history_t],
+            small_timestep,
+        )
+        return history_condition_latents
 
     def process(
         self,
@@ -530,7 +501,9 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
         precomputed_latents,
         input_latents,
         latents,
+        noise,
         num_history_frames,
+        use_history_condition_noise_in_inference,
         tiled,
         tile_size,
         tile_stride,
@@ -543,10 +516,16 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
             z = input_latents[:, :, :target_history].clone()
             history_t = z.shape[2]
             latents[:, :, :history_t] = z
+
+            z = self._add_history_condition_noise(
+                pipe,
+                z, noise, history_t,
+                use_history_condition_noise_in_inference,
+            )
             return {
                 "latents": latents,
                 "fuse_vae_embedding_in_latents": True,
-                "first_frame_latents": z,
+                "history_condition_latents": z,
                 "fused_condition_latent_frames": int(history_t),
             }
 
@@ -562,10 +541,9 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
             )
 
         pipe.load_models_to_device(self.onload_model_names)
-        history_frames = input_video[:, :, :num_history_frames]
-        first_frame_latents = history_frames.to(dtype=pipe.torch_dtype, device=pipe.device)
+        history_frames = input_video[:, :, :num_history_frames].to(dtype=pipe.torch_dtype, device=pipe.device)
         z_views = pipe.vae.encode(
-            first_frame_latents,
+            history_frames,
             device=pipe.device,
             tiled=tiled,
             tile_size=tile_size,
@@ -577,9 +555,15 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
         history_t = z.shape[2]
         latents[:, :, :history_t] = z
 
+        z = self._add_history_condition_noise(
+            pipe,
+            z, noise, history_t,
+            use_history_condition_noise_in_inference,
+        )
+
         return {
             "latents": latents,
             "fuse_vae_embedding_in_latents": True,
-            "first_frame_latents": z,
+            "history_condition_latents": z,
             "fused_condition_latent_frames": int(history_t),
         }
