@@ -482,16 +482,19 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
         ):
             return history_condition_latents
 
-        small_timestep_idx = max(0, len(pipe.scheduler.timesteps) - 50)
-        small_timestep = pipe.scheduler.timesteps[small_timestep_idx].unsqueeze(0).to(
+        training_sigmas, _ = pipe.scheduler.set_timesteps_fn(
+            num_inference_steps=1000,
+            denoising_strength=1.0,
+        )
+        small_sigma_idx = max(0, len(training_sigmas) - 50)
+        small_sigma = training_sigmas[small_sigma_idx].to(
             dtype=pipe.torch_dtype,
             device=pipe.device,
         )
-        history_condition_latents[:, :, 1:history_t] = pipe.scheduler.add_noise(
-            history_condition_latents[:, :, 1:history_t],
-            noise[:, :, 1:history_t],
-            small_timestep,
-        )
+        history_condition_latents[:, :, 1:history_t] = (
+            (1 - small_sigma.float()) * history_condition_latents[:, :, 1:history_t].float()
+            + small_sigma.float() * noise[:, :, 1:history_t].float()
+        ).to(dtype=history_condition_latents.dtype)
         return history_condition_latents
 
     def process(
