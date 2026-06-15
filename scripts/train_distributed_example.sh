@@ -14,10 +14,13 @@ CONFIG_PATH="${CONFIG_PATH:-configs/train/train_wan22_ti2v_5b_action_adaln.yaml}
 ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/train/accelerate_multi_gpu.yaml}"
 MACHINE_RANK="${MACHINE_RANK:-}"
 DATASET_NUM_WORKERS="${DATASET_NUM_WORKERS:-8}"
-MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-50}"
-SAVE_STEPS="${SAVE_STEPS:-10}"
+MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-20000}"
+SAVE_STEPS="${SAVE_STEPS:-2000}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-16}"
+USE_GRADIENT_CHECKPOINTING="${USE_GRADIENT_CHECKPOINTING:-1}"
+DETERMINISTIC="${DETERMINISTIC:-0}"
 CKPT_PATH="${CKPT_PATH:-}"
+RESUME_FROM="${RESUME_FROM:-}"
 OUTPUT_PATH="${OUTPUT_PATH:-}"
 
 LAUNCH_CMD=(
@@ -38,11 +41,18 @@ TRAIN_CMD=(
   --action_stat_path "${ACTION_STAT_PATH}"
   --dataset_num_workers "${DATASET_NUM_WORKERS}"
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}"
-  --find_unused_parameters
-  --use_gradient_checkpointing
   --max_train_steps "${MAX_TRAIN_STEPS}"
   --save_steps "${SAVE_STEPS}"
+  --find_unused_parameters
 )
+
+if [ "${USE_GRADIENT_CHECKPOINTING}" = "1" ]; then
+  TRAIN_CMD+=(--use_gradient_checkpointing)
+fi
+
+if [ "${DETERMINISTIC}" = "1" ]; then
+  TRAIN_CMD+=(--deterministic)
+fi
 
 if [ -n "${OUTPUT_PATH}" ]; then
   TRAIN_CMD+=(--output_path "${OUTPUT_PATH}")
@@ -50,6 +60,10 @@ fi
 
 if [ -n "${CKPT_PATH}" ]; then
   TRAIN_CMD+=(--ckpt_path "${CKPT_PATH}")
+fi
+
+if [ -n "${RESUME_FROM}" ]; then
+  TRAIN_CMD+=(--resume_from "${RESUME_FROM}")
 fi
 
 "${LAUNCH_CMD[@]}" "${TRAIN_CMD[@]}"

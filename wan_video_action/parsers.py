@@ -127,6 +127,7 @@ def add_training_config(parser: argparse.ArgumentParser):
     group.add_argument("--weight_decay", type=float, default=0.01, help="[TUNABLE] Weight decay.")
     group.add_argument("--task", type=str, default="sft", help="[OPTIONAL] Task type.")
     group.add_argument("--seed", type=int, default=42, help="[OPTIONAL] Random seed for python/numpy/torch.")
+    group.add_argument("--deterministic", action="store_true", default=False, help="[OPTIONAL] Enable deterministic PyTorch algorithms for strict resume debugging.")
     group.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"], help="[OPTIONAL] Mixed precision mode.")
     group.add_argument("--max_timestep_boundary", type=float, default=1.0, help="[OPTIONAL] Max timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
     group.add_argument("--min_timestep_boundary", type=float, default=0.0, help="[OPTIONAL] Min timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
@@ -142,7 +143,7 @@ def add_output_config(parser: argparse.ArgumentParser):
     group.add_argument("--remove_prefix_in_ckpt", type=str, default="pipe.dit.", help='[OPTIONAL] Remove prefix in ckpt. (default: "pipe.dit.")')
     group.add_argument("--save_steps", type=int, default=None, help="[OPTIONAL] Number of checkpoint saving intervals. If None, checkpoints will be saved every epoch.")
     group.add_argument("--ckpt_path", type=str, default=None, help="[OPTIONAL] Path to model checkpoint (.safetensors) used to initialize training weights (model-only resume).")
-    group.add_argument("--resume_from", type=str, default=None, help="[OPTIONAL] Path to a checkpoint directory saved by accelerator (e.g., output_path/epoch-0).")
+    group.add_argument("--resume_from", type=str, default=None, help="[OPTIONAL] Path to a full training state directory saved by accelerator (e.g., output_path/states/latest).")
     return parser
 
 

@@ -10,7 +10,6 @@ from diffsynth.core import ModelConfig
 from diffsynth.diffusion import (
     DiffusionTrainingModule,
     DirectDistillLoss,
-    ModelLogger,
     launch_data_process_task,
 )
 
@@ -19,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from wan_video_action.data import build_train_dataset
+from wan_video_action.logger import ModelLogger
 from wan_video_action.loss import FlowMatchSFTLossWanAction
 from wan_video_action.parsers import merge_yaml_and_args, prepare_model_config, add_general_config
 from wan_video_action.pipelines.wan_video_action import build_wan_video_action_pipeline
@@ -165,8 +165,8 @@ if __name__ == "__main__":
 
     if args.config is not None:
         args = merge_yaml_and_args(args.config, parser, args)
-    
-    set_global_seed(args.seed)
+
+    set_global_seed(args.seed, deterministic=args.deterministic)
     model_config = prepare_model_config(args)
     trainable_models = ",".join(args.trainable)
 
@@ -189,7 +189,7 @@ if __name__ == "__main__":
     print("[resolved_config] history_template_sampling:", args.history_template_sampling)
     print("[resolved_config] spatial_division_factor:", args.spatial_division_factor)
     print("[resolved_config] max_train_steps:", args.max_train_steps)
-
+    print("[resolved_config] deterministic:", args.deterministic)
     loggers = [name for name in ("wandb", "swanlab") if getattr(args, f"use_{name}", False)]
     accelerator = accelerate.Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,

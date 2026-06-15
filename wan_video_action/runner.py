@@ -1,7 +1,11 @@
 import datetime
 import os
+import random
 import time
 
+from accelerate import skip_first_batches
+from accelerate.utils import DistributedType
+import numpy as np
 import torch
 from diffsynth.diffusion.runner import initialize_deepspeed_gradient_checkpointing
 from tqdm import tqdm
@@ -35,10 +39,20 @@ def launch_training_task(
         resume_from = args.resume_from
         ckpt_path = args.ckpt_path
         dataset_repeat = args.dataset_repeat
+    output_path = args.output_path if args is not None else model_logger.output_path
     if resume_from and ckpt_path:
         raise ValueError("`--resume_from` and `--ckpt_path` are mutually exclusive. Use only one of them.")
+    os.makedirs(output_path, exist_ok=True)
 
-    optimizer = torch.optim.AdamW(model.trainable_modules(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer_kwargs = {}
+    if accelerator.distributed_type == DistributedType.DEEPSPEED:
+        optimizer_kwargs = {"foreach": False, "fused": False}
+    optimizer = torch.optim.AdamW(
+        model.trainable_modules(),
+        lr=learning_rate,
+        weight_decay=weight_decay,
+        **optimizer_kwargs,
+    )
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     dataloader_kwargs = {
         "shuffle": False,
@@ -65,28 +79,28 @@ def launch_training_task(
                 init_kwargs=tracker_init_kwargs,
             )
 
+    accelerator.register_for_checkpointing(model_logger)
+
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     initialize_deepspeed_gradient_checkpointing(accelerator)
 
     start_epoch = 0
     if resume_from:
-        accelerator.print(f"Resuming training from checkpoint: {resume_from}")
+        accelerator.print(f"Resuming training from full state: {resume_from}")
         accelerator.load_state(resume_from)
-        basename = os.path.basename(os.path.normpath(resume_from))
-        if basename.startswith("epoch-"):
-            try:
-                resume_epoch_label = int(basename.split("-", 1)[1])
-                if dataset_repeat > 1 and (resume_epoch_label + 1) % dataset_repeat == 0:
-                    start_epoch = (resume_epoch_label + 1) // dataset_repeat
-                else:
-                    start_epoch = resume_epoch_label + 1
-            except ValueError:
-                start_epoch = 0
-        state_step = getattr(accelerator.state, "step", None)
-        if state_step is not None:
-            model_logger.num_steps = state_step
+        start_epoch = model_logger.epoch_id
 
     epoch_id = start_epoch
+    skip_batches = model_logger.batch_in_epoch if resume_from else 0
+    resume_rng_state = None
+    if skip_batches:
+        resume_rng_state = {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        }
+    resume_rng_restored = False
     last_step_time = time.monotonic()
     while max_train_steps is not None or epoch_id < num_epochs:
         if max_train_steps is not None and model_logger.num_steps >= max_train_steps:
@@ -96,14 +110,24 @@ def launch_training_task(
         optimizer.zero_grad()
         epoch_label = (epoch_id + 1) * dataset_repeat - 1
 
-        progress_bar = tqdm(dataloader, disable=not accelerator.is_local_main_process)
-        for data in progress_bar:
+        epoch_dataloader = skip_first_batches(dataloader, skip_batches) if skip_batches else dataloader
+        progress_bar = tqdm(epoch_dataloader, disable=not accelerator.is_local_main_process)
+        for local_batch_idx, data in enumerate(progress_bar):
+            batch_idx = skip_batches + local_batch_idx
+            if resume_rng_state is not None and not resume_rng_restored:
+                random.setstate(resume_rng_state["python"])
+                np.random.set_state(resume_rng_state["numpy"])
+                torch.set_rng_state(resume_rng_state["torch"])
+                if resume_rng_state["cuda"] is not None:
+                    torch.cuda.set_rng_state_all(resume_rng_state["cuda"])
+                resume_rng_restored = True
             with accelerator.accumulate(model):
                 if getattr(dataset, "load_from_cache", False):
                     loss = model({}, inputs=data)
                 else:
                     loss = model(data)
-                train_loss += loss.detach().float().item()
+                loss_item = loss.detach().float().item()
+                train_loss += loss_item
                 loss_count += 1
                 accelerator.backward(loss)
 
@@ -131,6 +155,8 @@ def launch_training_task(
                         grad_norm=grad_norm,
                         optimizer=optimizer,
                         epoch=epoch_label,
+                        epoch_id=epoch_id,
+                        batch_in_epoch=batch_idx + 1,
                         force_step=True,
                     )
                     train_loss = 0.0
@@ -155,8 +181,9 @@ def launch_training_task(
 
                     if max_train_steps is not None and model_logger.num_steps >= max_train_steps:
                         break
+        skip_batches = 0
         if save_steps is None:
-            model_logger.on_epoch_end(accelerator, model, epoch_label)
+            model_logger.on_epoch_end(accelerator, model, epoch_label, progress_epoch_id=epoch_id + 1)
         epoch_id += 1
     model_logger.on_training_end(accelerator, model, save_steps)
     if torch.distributed.is_available() and torch.distributed.is_initialized():

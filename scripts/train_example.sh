@@ -14,7 +14,11 @@ CONFIG_PATH="${CONFIG_PATH:-configs/train/train_wan22_ti2v_5b_action_adaln.yaml}
 DATASET_NUM_WORKERS="${DATASET_NUM_WORKERS:-8}"
 MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-10000}"
 SAVE_STEPS="${SAVE_STEPS:-5}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-}"
+USE_GRADIENT_CHECKPOINTING="${USE_GRADIENT_CHECKPOINTING:-1}"
+DETERMINISTIC="${DETERMINISTIC:-0}"
 CKPT_PATH="${CKPT_PATH:-}"
+RESUME_FROM="${RESUME_FROM:-}"
 OUTPUT_PATH="${OUTPUT_PATH:-}"
 
 CMD=(
@@ -25,10 +29,21 @@ CMD=(
   --dataset_metadata_path "${DATASET_METADATA_PATH}"
   --action_stat_path "${ACTION_STAT_PATH}"
   --dataset_num_workers "${DATASET_NUM_WORKERS}"
-  --use_gradient_checkpointing
   --max_train_steps "${MAX_TRAIN_STEPS}"
   --save_steps "${SAVE_STEPS}"
 )
+
+if [ -n "${GRADIENT_ACCUMULATION_STEPS}" ]; then
+  CMD+=(--gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}")
+fi
+
+if [ "${USE_GRADIENT_CHECKPOINTING}" = "1" ]; then
+  CMD+=(--use_gradient_checkpointing)
+fi
+
+if [ "${DETERMINISTIC}" = "1" ]; then
+  CMD+=(--deterministic)
+fi
 
 if [ -n "${OUTPUT_PATH}" ]; then
   CMD+=(--output_path "${OUTPUT_PATH}")
@@ -36,6 +51,10 @@ fi
 
 if [ -n "${CKPT_PATH}" ]; then
   CMD+=(--ckpt_path "${CKPT_PATH}")
+fi
+
+if [ -n "${RESUME_FROM}" ]; then
+  CMD+=(--resume_from "${RESUME_FROM}")
 fi
 
 "${CMD[@]}"
