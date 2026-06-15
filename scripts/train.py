@@ -95,6 +95,7 @@ class WanTrainingModule(DiffusionTrainingModule):
         self.min_timestep_boundary = min_timestep_boundary
         self.num_history_frames = num_history_frames
         self.history_template_sampling = int(history_template_sampling)
+        self.use_precomputed_latents = args.modes["vae"] == "emb"
 
     def parse_extra_inputs(self, data, extra_inputs, inputs_shared):
         for extra_input in extra_inputs:
@@ -109,10 +110,30 @@ class WanTrainingModule(DiffusionTrainingModule):
         return inputs_shared
 
     def get_pipeline_inputs(self, data):
-        input_video = data["video"]
-        if not torch.is_tensor(input_video) or input_video.ndim != 5:
-            raise TypeError(f"Expected raw video tensor with shape (V,C,T,H,W), got {type(input_video).__name__}.")
-        sample_num_frames = int(input_video.shape[2])
+        if self.use_precomputed_latents:
+            precomputed_latents = data["latents"]
+            if not torch.is_tensor(precomputed_latents) or precomputed_latents.ndim != 5:
+                raise TypeError(
+                    f"Expected latent tensor with shape (V,C,T,H,W), got {type(precomputed_latents).__name__}."
+                )
+            input_video = None
+            action = data.get("action")
+            if hasattr(action, "shape") and len(action.shape) >= 2:
+                sample_num_frames = int(action.shape[1])
+            else:
+                sample_num_frames = 1 + 4 * (int(precomputed_latents.shape[2]) - 1)
+            upsampling_factor = int(getattr(self.pipe.vae, "upsampling_factor", 8))
+            height = int(precomputed_latents.shape[-2]) * upsampling_factor
+            width = int(precomputed_latents.shape[-1]) * upsampling_factor
+        else:
+            input_video = data["video"]
+            if not torch.is_tensor(input_video) or input_video.ndim != 5:
+                raise TypeError(f"Expected raw video tensor with shape (V,C,T,H,W), got {type(input_video).__name__}.")
+            precomputed_latents = None
+            sample_num_frames = int(input_video.shape[2])
+            height = int(input_video.shape[-2])
+            width = int(input_video.shape[-1])
+
         inputs_posi = {
             "prompt": data.get("prompt"),
             "prompt_emb": data.get("prompt_emb"),
@@ -123,10 +144,10 @@ class WanTrainingModule(DiffusionTrainingModule):
         }
         inputs_shared = {
             "input_video": input_video,
-            "precomputed_latents": None,
+            "precomputed_latents": precomputed_latents,
             "action": data.get("action"),
-            "height": int(input_video.shape[-2]),
-            "width": int(input_video.shape[-1]),
+            "height": height,
+            "width": width,
             "num_frames": sample_num_frames,
             "num_history_frames": self.num_history_frames,
             "history_template_sampling": self.history_template_sampling,

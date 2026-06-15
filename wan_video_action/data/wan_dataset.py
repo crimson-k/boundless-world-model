@@ -111,7 +111,13 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         future_len = int(num_frames - num_history_frames)
         lower = max(1, start_frame)
         upper = end_frame
-        if future_len > 0:
+        raw_length = data.get("raw_length")
+        raw_end = None
+        if raw_length is not None:
+            raw_end = max(0, int(raw_length) - 1)
+            if future_len > 0:
+                upper = min(upper, raw_end - future_len + 1)
+        elif future_len > 0:
             upper = min(upper, end_frame - future_len + 1)
 
         if self.temporal_align_to_vae_latent:
@@ -135,7 +141,10 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         )
 
         future_indices = [future_start + offset for offset in range(future_len)]
-        future_indices = [min(frame_id, end_frame) for frame_id in future_indices]
+        if raw_end is not None:
+            future_indices = [min(frame_id, raw_end) for frame_id in future_indices]
+        else:
+            future_indices = [min(frame_id, end_frame) for frame_id in future_indices]
         return {
             "frame_indices": list(history_indices + future_indices),
             "temporal_future_start": int(future_start),
@@ -168,10 +177,19 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
 
 
 def build_robotwin_train_dataset(args) -> RoboTwinUnifiedDataset:
-    if args.modes["vae"] == "emb":
-        raise NotImplementedError("Only raw-video training is supported. `vae:emb` is not implemented yet.")
-
     keys = tuple(args.data_keys)
+    vae_mode = args.modes["vae"]
+    if vae_mode == "raw":
+        if "video" not in keys:
+            raise ValueError("`dataset.data_keys` must contain `video` when `model.modes.vae=raw`.")
+    elif vae_mode == "emb":
+        if "latents" not in keys:
+            raise ValueError("`dataset.data_keys` must contain `latents` when `model.modes.vae=emb`.")
+        if "video" in keys:
+            raise ValueError("`dataset.data_keys` must not contain `video` when `model.modes.vae=emb`.")
+    else:
+        raise NotImplementedError(f"Unsupported training VAE mode: {vae_mode!r}")
+
     special_operator_map = {}
     if args.modes["text"] != "none":
         for key in ("prompt_emb", "negative_prompt_emb"):
@@ -211,7 +229,7 @@ def build_robotwin_train_dataset(args) -> RoboTwinUnifiedDataset:
         temporal_template_sampling=bool(args.history_template_sampling),
         temporal_num_frames=int(args.num_frames),
         temporal_num_history_frames=int(args.num_history_frames),
-        temporal_align_to_vae_latent=False,
+        temporal_align_to_vae_latent=(vae_mode == "emb"),
     )
 
 

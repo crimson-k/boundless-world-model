@@ -68,6 +68,135 @@ class ResolvePromptEmbPath(DataProcessingOperator):
         return resolve_path(self.base_path, data)
 
 
+class LoadWanLatents(DataProcessingOperator):
+    def __init__(
+        self,
+        base_path="",
+        num_frames=81,
+        time_division_factor=4,
+        time_division_remainder=1,
+    ):
+        self.base_path = base_path
+        self.num_frames = num_frames
+        self.time_division_factor = time_division_factor
+        self.time_division_remainder = time_division_remainder
+
+    @staticmethod
+    def pixel_to_latent_index(frame_id: int) -> int:
+        frame_id = int(frame_id)
+        if frame_id <= 0:
+            return 0
+        return 1 + (frame_id - 1) // 4
+
+    @classmethod
+    def expected_latent_frames(cls, num_pixel_frames: int) -> int:
+        num_pixel_frames = int(num_pixel_frames)
+        if num_pixel_frames <= 0:
+            return 0
+        return 1 + (num_pixel_frames - 1) // 4
+
+    @classmethod
+    def frame_indices_to_latent_indices(cls, frame_indices, total_latent_frames=None):
+        frame_indices = [int(frame_id) for frame_id in frame_indices]
+        if len(frame_indices) == 0:
+            return []
+
+        # Wan temporal latents follow pixel-frame groups [0], [1:5], [5:9], ...
+        latent_frame_count = cls.expected_latent_frames(len(frame_indices))
+        sample_positions = [0]
+        sample_positions.extend(1 + 4 * step for step in range(latent_frame_count - 1))
+
+        max_idx = None if total_latent_frames is None else max(0, int(total_latent_frames) - 1)
+        mapped = []
+        for pos in sample_positions:
+            frame_id = frame_indices[pos]
+            lat_id = cls.pixel_to_latent_index(frame_id)
+            if max_idx is not None:
+                lat_id = min(max(0, lat_id), max_idx)
+            mapped.append(lat_id)
+        return mapped
+
+    def get_num_frames(self, total_frames):
+        if self.num_frames is None:
+            return int(total_frames)
+        num_frames = int(self.num_frames)
+        if int(total_frames) < num_frames:
+            num_frames = align_num_frames(
+                int(total_frames),
+                time_division_factor=self.time_division_factor,
+                time_division_remainder=self.time_division_remainder,
+            )
+        return num_frames
+
+    def _resolve_info(self, data, start_frame=None, end_frame=None, frame_indices=None):
+        if isinstance(data, dict):
+            payload = data.get("data")
+            start_frame = start_frame if start_frame is not None else data.get("start_frame")
+            end_frame = end_frame if end_frame is not None else data.get("end_frame")
+            frame_indices = frame_indices if frame_indices is not None else data.get("frame_indices")
+        else:
+            payload = data
+
+        if not payload:
+            raise KeyError("Missing latent path in metadata 'data' field.")
+
+        paths = list(payload) if isinstance(payload, (list, tuple)) else [payload]
+        paths = [resolve_path(self.base_path, os.fspath(path)) for path in paths]
+        if frame_indices is not None:
+            frame_indices = [int(frame_id) for frame_id in frame_indices]
+        else:
+            start_frame = None if start_frame is None else int(start_frame)
+            end_frame = None if end_frame is None else int(end_frame)
+        return paths, start_frame, end_frame, frame_indices
+
+    @staticmethod
+    def _load_latent_tensor(path):
+        tensor = torch.load(path, map_location="cpu", weights_only=False)
+        if not isinstance(tensor, torch.Tensor):
+            tensor = torch.as_tensor(tensor)
+        if tensor.ndim != 5:
+            raise ValueError(f"Expected latent tensor with shape (V,C,T,H,W), got {tuple(tensor.shape)} at {path}")
+        return tensor
+
+    def _latent_indices(self, total_latent_frames, start_frame, end_frame, frame_indices):
+        max_idx = max(0, int(total_latent_frames) - 1)
+        if frame_indices is not None:
+            return self.frame_indices_to_latent_indices(frame_indices, total_latent_frames=max_idx + 1)
+
+        if start_frame is None or end_frame is None:
+            return list(range(max_idx + 1))
+
+        num_frames = self.get_num_frames(end_frame - start_frame + 1)
+        if num_frames <= 0:
+            return [0] if max_idx >= 0 else []
+        pix_start = int(start_frame)
+        pix_end = int(start_frame + num_frames - 1)
+        lat_start = min(max(0, self.pixel_to_latent_index(pix_start)), max_idx)
+        lat_end = min(max(0, self.pixel_to_latent_index(pix_end)), max_idx)
+        if lat_end < lat_start:
+            lat_end = lat_start
+        return list(range(lat_start, lat_end + 1))
+
+    def __call__(self, data, start_frame=None, end_frame=None, frame_indices=None):
+        paths, start_frame, end_frame, frame_indices = self._resolve_info(
+            data, start_frame=start_frame, end_frame=end_frame, frame_indices=frame_indices
+        )
+        loaded = [self._load_latent_tensor(path) for path in paths]
+        latents = loaded[0] if len(loaded) == 1 else torch.cat(loaded, dim=0)
+
+        indices = self._latent_indices(latents.shape[2], start_frame, end_frame, frame_indices)
+        if frame_indices is None and start_frame is not None and end_frame is not None:
+            expected_frames = self.get_num_frames(end_frame - start_frame + 1)
+            expected_latent_frames = self.expected_latent_frames(expected_frames)
+            if len(indices) > expected_latent_frames:
+                raise RuntimeError(
+                    f"Latent index count ({len(indices)}) exceeds expected window "
+                    f"({expected_latent_frames}) for frame range [{start_frame}, {end_frame}]."
+                )
+        index_tensor = torch.tensor(indices, dtype=torch.long)
+        return torch.index_select(latents, dim=2, index=index_tensor)
+
+
 class LoadVideoChunk(DataProcessingOperator, FrameSamplerByRateMixin):
     def __init__(self, base_path="", num_frames=81, time_division_factor=4, time_division_remainder=1, frame_processor=lambda x: x, frame_rate=24, fix_frame_rate=False):
         FrameSamplerByRateMixin.__init__(self, num_frames, time_division_factor, time_division_remainder, frame_rate, fix_frame_rate)
@@ -299,6 +428,16 @@ class ToVideoTensor(DataProcessingOperator):
             raise TypeError("Expected loaded video frames as list/tuple.")
 
         # Check if multi-view (list of lists)
+        if isinstance(data[0], torch.Tensor):
+            videos = []
+            for item in data:
+                if item.ndim == 4:
+                    item = item.unsqueeze(0)
+                elif item.ndim != 5:
+                    raise ValueError(f"Expected tensor item shape (V,C,T,H,W) or (C,T,H,W), got {tuple(item.shape)}")
+                videos.append(item)
+            return torch.cat(videos, dim=0).to(dtype=torch.float32)
+
         if isinstance(data[0], (list, tuple)):
             views = [self._frames_to_video_tensor(view) for view in data]
             return torch.stack(views, dim=0)  # (V, C, T, H, W)
@@ -559,11 +698,13 @@ def create_video_operator(
     
     gif_pipeline = LoadGIFChunk(base_path=base_path, num_frames=num_frames, time_division_factor=time_division_factor, time_division_remainder=time_division_remainder, frame_processor=image_processor)
     video_pipeline = LoadVideoChunk(base_path=base_path, num_frames=num_frames, time_division_factor=time_division_factor, time_division_remainder=time_division_remainder, frame_processor=image_processor)
+    latent_pipeline = LoadWanLatents(base_path=base_path, num_frames=num_frames, time_division_factor=time_division_factor, time_division_remainder=time_division_remainder)
     
     video_operator = RouteByKeyExtension(key=default_key, operator_map=[
         (("jpg", "jpeg", "png", "webp"), image_pipeline),
         (("gif",), gif_pipeline),
         (("mp4", "avi", "mov", "wmv", "mkv", "flv", "webm"), video_pipeline),
+        (("pt", "pth"), latent_pipeline),
     ])
     # Support dict (with metadata), str (single path), and list (multi-view)
     return RouteByType(operator_map=[

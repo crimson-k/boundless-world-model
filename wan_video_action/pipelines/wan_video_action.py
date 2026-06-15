@@ -15,11 +15,9 @@ from ..models.wan_video_action_encoder import WanVideoActionEncoder
 def _build_wan2_action_units(pipe: WanVideoPipeline):
     selected = [
         unit for unit in pipe.units
-        if unit.__class__.__name__ in {
-            "WanVideoUnit_ShapeChecker",
-            "WanVideoUnit_NoiseInitializer",
-        }
+        if unit.__class__.__name__ == "WanVideoUnit_ShapeChecker"
     ]
+    selected.append(WanVideoUnit_NoiseInitializer())
     selected.append(WanVideoUnit_InputVideoEmbedder())
     selected.append(WanVideoUnit_ImageEmbedderFused())
     selected.append(WanVideoUnit_ActionEmbedder())
@@ -230,6 +228,33 @@ def build_wan_video_action_pipeline(
 
     pipe.model_fn = model_fn_wan_video_action
     return pipe
+
+
+class WanVideoUnit_NoiseInitializer(PipelineUnit):
+    def __init__(self):
+        super().__init__(
+            input_params=("input_video", "precomputed_latents", "height", "width", "num_frames", "seed", "rand_device"),
+            output_params=("noise",),
+        )
+
+    def process(self, pipe: WanVideoPipeline, input_video, precomputed_latents, height, width, num_frames, seed, rand_device):
+        if precomputed_latents is not None:
+            shape = (
+                1,
+                int(precomputed_latents.shape[1]),
+                int(precomputed_latents.shape[2]),
+                int(precomputed_latents.shape[0]) * int(precomputed_latents.shape[3]),
+                int(precomputed_latents.shape[4]),
+            )
+        else:
+            num_views = int(input_video.shape[0]) if input_video is not None else 1
+            length = (int(num_frames) - 1) // 4 + 1
+            latent_height = (int(height) * num_views) // pipe.vae.upsampling_factor
+            latent_width = int(width) // pipe.vae.upsampling_factor
+            shape = (1, pipe.vae.model.z_dim, length, latent_height, latent_width)
+
+        noise = pipe.generate_noise(shape, seed=seed, rand_device=rand_device)
+        return {"noise": noise}
 
 
 class WanVideoUnit_ActionEmbedder(PipelineUnit):

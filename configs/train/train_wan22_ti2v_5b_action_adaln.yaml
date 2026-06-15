@@ -8,7 +8,7 @@ dataset:
   dataset_metadata_path: null
   dataset_repeat: 1
   dataset_num_workers: 8
-  data_keys: ["video", "action"]
+  data_keys: ["latents", "action"] # ["latents", "action"]
 
 video:
   height: 480
@@ -34,7 +34,7 @@ model:
   modes:
     dit: "default"
     text: "none"
-    vae: "raw"
+    vae: "emb" # "emb"
     image: "none"
     action: "adaln"
 
