@@ -178,17 +178,6 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
 
 def build_robotwin_train_dataset(args) -> RoboTwinUnifiedDataset:
     keys = tuple(args.data_keys)
-    vae_mode = args.modes["vae"]
-    if vae_mode == "raw":
-        if "video" not in keys:
-            raise ValueError("`dataset.data_keys` must contain `video` when `model.modes.vae=raw`.")
-    elif vae_mode == "emb":
-        if "latents" not in keys:
-            raise ValueError("`dataset.data_keys` must contain `latents` when `model.modes.vae=emb`.")
-        if "video" in keys:
-            raise ValueError("`dataset.data_keys` must not contain `video` when `model.modes.vae=emb`.")
-    else:
-        raise NotImplementedError(f"Unsupported training VAE mode: {vae_mode!r}")
 
     special_operator_map = {}
     if args.modes["text"] != "none":
@@ -229,7 +218,7 @@ def build_robotwin_train_dataset(args) -> RoboTwinUnifiedDataset:
         temporal_template_sampling=bool(args.history_template_sampling),
         temporal_num_frames=int(args.num_frames),
         temporal_num_history_frames=int(args.num_history_frames),
-        temporal_align_to_vae_latent=(vae_mode == "emb"),
+        temporal_align_to_vae_latent=(args.modes["vae"] == "emb"),
     )
 
 

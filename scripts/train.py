@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 from wan_video_action.data import build_train_dataset
 from wan_video_action.logger import ModelLogger
 from wan_video_action.loss import FlowMatchSFTLossWanAction
-from wan_video_action.parsers import merge_yaml_and_args, prepare_model_config, add_general_config
+from wan_video_action.parsers import merge_yaml_and_args, prepare_model_config, resolve_data_keys, add_general_config
 from wan_video_action.pipelines.wan_video_action import build_wan_video_action_pipeline
 from wan_video_action.runner import launch_training_task
 from wan_video_action.utils import set_global_seed
@@ -189,6 +189,7 @@ if __name__ == "__main__":
 
     set_global_seed(args.seed, deterministic=args.deterministic)
     model_config = prepare_model_config(args)
+    args = resolve_data_keys(args, stage="train")
     trainable_models = ",".join(args.trainable)
 
     print("[resolved_config] model_config_path:", args.model_config_path)

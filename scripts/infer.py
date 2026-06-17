@@ -13,7 +13,7 @@ import torch
 
 from diffsynth.core import ModelConfig
 from wan_video_action.data import build_infer_dataset
-from wan_video_action.parsers import add_general_config, merge_yaml_and_args, prepare_model_config
+from wan_video_action.parsers import add_general_config, merge_yaml_and_args, prepare_model_config, resolve_data_keys
 from wan_video_action.pipelines.wan_video_action import build_wan_video_action_pipeline
 from wan_video_action.utils import align_num_frames, resolve_model_path, save_video
 
@@ -198,6 +198,7 @@ def prepare_sample_for_rollout(sample: Dict, sample_index: int, pipe, args) -> D
 def main():
     args = parse_args()
     model_config = prepare_model_config(args)
+    args = resolve_data_keys(args, stage="infer")
     print("[resolved_config] model_paths:", args.model_paths)
     print("[resolved_config] model_config_path:", args.model_config_path)
     print("[resolved_config] resolved_model_paths:", model_config["model_paths_list"])

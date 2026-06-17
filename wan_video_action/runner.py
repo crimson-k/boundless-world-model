@@ -10,6 +10,8 @@ import torch
 from diffsynth.diffusion.runner import initialize_deepspeed_gradient_checkpointing
 from tqdm import tqdm
 
+from wan_video_action.logger import TrainingLogger
+
 
 def launch_training_task(
     accelerator,
@@ -65,20 +67,8 @@ def launch_training_task(
         dataloader_kwargs["prefetch_factor"] = 64
     dataloader = torch.utils.data.DataLoader(dataset, **dataloader_kwargs)
 
-    if args is not None and len(getattr(accelerator, "log_with", [])) > 0:
-        tracker_init_kwargs = {}
-        if args.use_wandb:
-            tracker_init_kwargs["wandb"] = {"name": args.output_path}
-        if args.use_swanlab:
-            experiment_name = args.swanlab_experiment_name or args.output_path
-            tracker_init_kwargs["swanlab"] = {"experiment_name": experiment_name}
-        if tracker_init_kwargs:
-            accelerator.init_trackers(
-                project_name="DiffSynth-Studio",
-                config=vars(args),
-                init_kwargs=tracker_init_kwargs,
-            )
-
+    training_logger = TrainingLogger(accelerator, output_path, args=args)
+    training_logger.init_trackers()
     accelerator.register_for_checkpointing(model_logger)
 
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
@@ -131,13 +121,8 @@ def launch_training_task(
                 loss_count += 1
                 accelerator.backward(loss)
 
-                grad_norm = None
-                if accelerator.sync_gradients and max_grad_norm is not None:
-                    grad_norm = accelerator.clip_grad_norm_(model.parameters(), max_grad_norm)
-                    if isinstance(grad_norm, torch.Tensor):
-                        grad_norm = grad_norm.item()
-
                 if accelerator.sync_gradients:
+                    grad_norm = float(accelerator.clip_grad_norm_(model.parameters(), max_grad_norm))
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
@@ -151,17 +136,29 @@ def launch_training_task(
                         accelerator,
                         model,
                         save_steps,
-                        loss=avg_loss,
-                        grad_norm=grad_norm,
-                        optimizer=optimizer,
-                        epoch=epoch_label,
                         epoch_id=epoch_id,
                         batch_in_epoch=batch_idx + 1,
-                        force_step=True,
                     )
                     train_loss = 0.0
                     loss_count = 0
 
+                    learning_rate = scheduler.get_last_lr()[0]
+                    metrics = {
+                        "step": model_logger.num_steps,
+                        "epoch": epoch_label,
+                        "batch_in_epoch": batch_idx + 1,
+                        "loss": avg_loss,
+                        "lr": learning_rate,
+                        "grad_norm": grad_norm,
+                    }
+                    training_logger.log_step(metrics, step=model_logger.num_steps)
+
+                    postfix = {
+                        "step": model_logger.num_steps,
+                        "loss": avg_loss,
+                        "lr": learning_rate,
+                        "grad_norm": grad_norm,
+                    }
                     if save_steps is not None:
                         next_save_steps = save_steps - (model_logger.num_steps % save_steps)
                         if next_save_steps == 0:
@@ -173,11 +170,9 @@ def launch_training_task(
                             if remaining_train_steps < eta_steps:
                                 eta_steps = remaining_train_steps
                                 eta_label = "train_end_eta"
-                        progress_bar.set_postfix({
-                            "step": model_logger.num_steps,
-                            "next_save_steps": next_save_steps,
-                            eta_label: str(datetime.timedelta(seconds=max(0, int(step_time * eta_steps)))),
-                        })
+                        postfix["next_save_steps"] = next_save_steps
+                        postfix[eta_label] = str(datetime.timedelta(seconds=max(0, int(step_time * eta_steps))))
+                    training_logger.update_progress_bar(progress_bar, postfix)
 
                     if max_train_steps is not None and model_logger.num_steps >= max_train_steps:
                         break
@@ -186,5 +181,6 @@ def launch_training_task(
             model_logger.on_epoch_end(accelerator, model, epoch_label, progress_epoch_id=epoch_id + 1)
         epoch_id += 1
     model_logger.on_training_end(accelerator, model, save_steps)
+    training_logger.close()
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()

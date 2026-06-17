@@ -66,6 +66,22 @@ def prepare_model_config(args):
     }
 
 
+def resolve_data_keys(args, stage="train"):
+    if stage == "infer" or args.modes["vae"] == "raw":
+        keys = ["video"]
+    else:
+        keys = ["latents"]
+
+    if args.modes["action"] != "none":
+        keys.append("action")
+
+    if args.modes["text"] == "emb":
+        keys.extend(["prompt_emb", "negative_prompt_emb"])
+
+    args.data_keys = keys
+    return args
+
+
 def add_dataset_base_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("dataset")
     group.add_argument("--dataset_name", type=str, default="robotwin", help="[KEY] Dataset builder name.")
@@ -171,7 +187,7 @@ def add_tracking_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("tracking")
     group.add_argument("--use_wandb", action="store_true", default=False, help="[OPTIONAL] Enable Weights & Biases tracking.")
     group.add_argument("--use_swanlab", action="store_true", default=False, help="[OPTIONAL] Enable SwanLab tracking.")
-    group.add_argument("--swanlab_experiment_name", type=str, default=None, help="[OPTIONAL] SwanLab experiment name. Defaults to output_path.")
+    group.add_argument("--run_name", type=str, default=None, help="[OPTIONAL] Remote tracker run/project name. Defaults to output_path.")
     return parser
 
 

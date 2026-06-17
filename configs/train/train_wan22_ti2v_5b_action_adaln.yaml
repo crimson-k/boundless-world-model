@@ -8,7 +8,7 @@ dataset:
   dataset_metadata_path: null
   dataset_repeat: 1
   dataset_num_workers: 8
-  data_keys: ["latents", "action"] # ["latents", "action"]
+  data_keys: null
 
 video:
   height: 480
@@ -34,7 +34,7 @@ model:
   modes:
     dit: "default"
     text: "none"
-    vae: "emb" # "emb"
+    vae: "emb" # emb/raw
     image: "none"
     action: "adaln"
 
@@ -47,14 +47,14 @@ training:
   learning_rate: 5e-5
   num_epochs: 1
   trainable: ["dit", "action_encoder"]
-  find_unused_parameters: false
+  find_unused_parameters: true
   weight_decay: 0.01
   task: "sft"
   seed: 42
   mixed_precision: "bf16"
   max_timestep_boundary: 1.0
   min_timestep_boundary: 0.0
-  max_train_steps: 80000
+  max_train_steps: 20000
   batch_size: 1
 
 output:
@@ -73,7 +73,7 @@ lora:
   preset_lora_model: null
 
 gradient:
-  use_gradient_checkpointing: true
+  use_gradient_checkpointing: false
   use_gradient_checkpointing_offload: false
   gradient_accumulation_steps: 16
   max_grad_norm: 0.5
@@ -81,4 +81,4 @@ gradient:
 tracking:
   use_wandb: false
   use_swanlab: false
-  swanlab_experiment_name: null
+  run_name: null

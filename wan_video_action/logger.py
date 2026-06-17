@@ -5,6 +5,72 @@ import shutil
 from diffsynth.diffusion.runner import ModelLogger as DiffSynthModelLogger
 
 
+class TrainingLogger:
+    def __init__(self, accelerator, output_path, args):
+        self.accelerator = accelerator
+        self.output_path = output_path
+        self.args = args
+        self.metric_log_path = os.path.join(output_path, "train_metrics.jsonl")
+        self.tracker_names = [name for name in ("wandb", "swanlab") if getattr(args, f"use_{name}")]
+
+        if accelerator.is_main_process:
+            os.makedirs(output_path, exist_ok=True)
+        accelerator.wait_for_everyone()
+        metric_log_path = self.metric_log_path if accelerator.is_main_process else os.devnull
+        self.metric_log_file = open(metric_log_path, "a", encoding="utf-8")
+
+    @property
+    def run_name(self):
+        return self.args.run_name or self.output_path
+
+    def init_trackers(self):
+        if not self.tracker_names:
+            return
+
+        accelerator_tracker_names = {str(tracker) for tracker in self.accelerator.log_with}
+        missing_tracker_names = set(self.tracker_names) - accelerator_tracker_names
+        if missing_tracker_names:
+            raise ValueError(f"Accelerator is missing requested trackers: {sorted(missing_tracker_names)}")
+
+        tracker_init_kwargs = {}
+        if self.args.use_wandb:
+            tracker_init_kwargs["wandb"] = {"name": self.run_name}
+        if self.args.use_swanlab:
+            tracker_init_kwargs["swanlab"] = {"name": self.run_name}
+
+        self.accelerator.init_trackers(
+            project_name=self.run_name,
+            config=vars(self.args),
+            init_kwargs=tracker_init_kwargs,
+        )
+
+    def print_resolved_config(self, items):
+        for name, value in items:
+            self.accelerator.print(f"[resolved_config] {name}:", value)
+
+    def log_step(self, metrics, step):
+        self.metric_log_file.write(json.dumps(metrics, sort_keys=True) + "\n")
+        self.metric_log_file.flush()
+
+        if self.tracker_names:
+            remote_metrics = {
+                "train/loss": metrics["loss"],
+                "train/lr": metrics["lr"],
+                "train/grad_norm": metrics["grad_norm"],
+                "train/epoch": metrics["epoch"],
+                "train/batch_in_epoch": metrics["batch_in_epoch"],
+            }
+            self.accelerator.log(remote_metrics, step=step)
+
+    def update_progress_bar(self, progress_bar, postfix):
+        progress_bar.set_postfix(postfix)
+
+    def close(self):
+        self.metric_log_file.close()
+        if self.tracker_names:
+            self.accelerator.end_training()
+
+
 class ModelLogger(DiffSynthModelLogger):
     def __init__(self, output_path, remove_prefix_in_ckpt=None, state_dict_converter=lambda x: x):
         super().__init__(
