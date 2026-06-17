@@ -40,7 +40,6 @@ class WanTrainingModule(DiffusionTrainingModule):
         extra_inputs=None,
         fp8_models=None,
         offload_models=None,
-        ckpt_path=None,
         device="cpu",
         task="sft",
         max_timestep_boundary=1.0,
@@ -64,7 +63,6 @@ class WanTrainingModule(DiffusionTrainingModule):
             device=device,
             model_configs=model_configs,
             tokenizer_config=tokenizer_config,
-            ckpt_path=ckpt_path,
             action_dim=action_dim,
             action_mode=action_mode,
         )
@@ -238,7 +236,6 @@ if __name__ == "__main__":
         extra_inputs=args.extra_inputs,
         fp8_models=args.fp8_models,
         offload_models=args.offload_models,
-        ckpt_path=args.ckpt_path,
         task=args.task,
         device="cpu" if args.initialize_model_on_cpu else accelerator.device,
         max_timestep_boundary=args.max_timestep_boundary,

@@ -25,7 +25,7 @@ def FlowMatchSFTLossWanAction(pipe, **inputs):
     models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
     noise_pred = pipe.model_fn(**models, **inputs, timestep=timestep)
 
-    if getattr(pipe, "action_injection_mode", None) == "adaln" and history_t > 0:
+    if pipe.action_injection_mode == "adaln" and history_t > 0:
         noise_pred = noise_pred[:, :, history_t:]
         training_target = training_target[:, :, history_t:]
 

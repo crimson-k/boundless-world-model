@@ -21,7 +21,6 @@ DETERMINISTIC="${DETERMINISTIC:-0}"
 USE_WANDB="${USE_WANDB:-0}"
 USE_SWANLAB="${USE_SWANLAB:-0}"
 RUN_NAME="${RUN_NAME:-}"
-CKPT_PATH="${CKPT_PATH:-}"
 RESUME_FROM="${RESUME_FROM:-}"
 OUTPUT_PATH="${OUTPUT_PATH:-}"
 
@@ -66,10 +65,6 @@ fi
 
 if [ -n "${OUTPUT_PATH}" ]; then
   TRAIN_CMD+=(--output_path "${OUTPUT_PATH}")
-fi
-
-if [ -n "${CKPT_PATH}" ]; then
-  TRAIN_CMD+=(--ckpt_path "${CKPT_PATH}")
 fi
 
 if [ -n "${RESUME_FROM}" ]; then

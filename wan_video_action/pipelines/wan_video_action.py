@@ -180,15 +180,11 @@ def load_checkpoint_weights(pipe, ckpt_path: str):
         f"(missing={len(dit_result.missing_keys)}, unexpected={len(dit_result.unexpected_keys)})"
     )
 
-    if action_state:
-        try:
-            action_result = action_encoder.load_state_dict(action_state, strict=False, assign=True)
-        except TypeError:
-            action_result = action_encoder.load_state_dict(action_state, strict=False)
-        print(
-            f"  - Loaded action_encoder keys: {len(action_state)} "
-            f"(missing={len(action_result.missing_keys)}, unexpected={len(action_result.unexpected_keys)})"
-        )
+    action_result = action_encoder.load_state_dict(action_state, strict=False)
+    print(
+        f"  - Loaded action_encoder keys: {len(action_state)} "
+        f"(missing={len(action_result.missing_keys)}, unexpected={len(action_result.unexpected_keys)})"
+    )
 
 
 def build_wan_video_action_pipeline(
@@ -268,10 +264,6 @@ class WanVideoUnit_ActionEmbedder(PipelineUnit):
     def process(self, pipe, action=None, num_frames=None):
         if action is None:
             return {}
-        if pipe.action_encoder is None:
-            raise ValueError("Action encoder is not available in the pipeline.")
-        if any(param.device != pipe.device for param in pipe.action_encoder.parameters()):
-            pipe.action_encoder = pipe.action_encoder.to(device=pipe.device, dtype=pipe.torch_dtype)
 
         pipe.load_models_to_device(self.onload_model_names)
         action = torch.as_tensor(action, device=pipe.device, dtype=pipe.torch_dtype)
@@ -356,7 +348,6 @@ def model_fn_wan_video_action(
     context: torch.Tensor = None,
     action_emb: Optional[torch.Tensor] = None,
     action_mod_emb: Optional[torch.Tensor] = None,
-    action_injection_mode: str = "none",
     clip_feature: Optional[torch.Tensor] = None,
     y: Optional[torch.Tensor] = None,
     fuse_vae_embedding_in_latents: bool = False,
@@ -391,18 +382,11 @@ def model_fn_wan_video_action(
     elif not use_text_embedding:
         context = None
 
-    if action_emb is None or action_mod_emb is None:
-        raise ValueError("`action:adaln` requires both `action_emb` and `action_mod_emb`.")
     if context is None:
         context = action_emb
     else:
         context = torch.cat([context, action_emb], dim=1)
     text_token_count = context.shape[1]
-    if t.shape[1] % action_mod_emb.shape[1] != 0:
-        raise RuntimeError(
-            f"Temporal group mismatch: t.shape={tuple(t.shape)}, action_mod_emb.shape={tuple(action_mod_emb.shape)}. "
-            "Expected t.shape[1] to be divisible by action_mod_emb.shape[1]."
-        )
     num_spatial_tokens = t.shape[1] // action_mod_emb.shape[1]
     action_mod_emb = action_mod_emb.unsqueeze(2).repeat(1, 1, num_spatial_tokens, 1).flatten(1, 2)
     t = t + action_mod_emb
@@ -435,24 +419,19 @@ def model_fn_wan_video_action(
         dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1),
     ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
 
-    def create_custom_forward(module):
-        def custom_forward(*inputs):
-            return module(*inputs)
-        return custom_forward
-
     for block in dit.blocks:
         if hasattr(block, "cross_attn") and hasattr(block.cross_attn, "text_token_count"):
             block.cross_attn.text_token_count = text_token_count
         if use_gradient_checkpointing_offload:
             with torch.autograd.graph.save_on_cpu():
                 x = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
+                    block,
                     x, context, t_mod, freqs,
                     use_reentrant=False,
                 )
         elif use_gradient_checkpointing:
             x = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(block),
+                block,
                 x, context, t_mod, freqs,
                 use_reentrant=False,
             )
@@ -501,7 +480,7 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
         use_history_condition_noise_in_inference: bool,
     ):
         if not (
-            getattr(pipe, "action_injection_mode", None) == "adaln"
+            pipe.action_injection_mode == "adaln"
             and history_t > 1
             and (pipe.scheduler.training or bool(use_history_condition_noise_in_inference))
         ):

@@ -138,7 +138,6 @@ def add_action_config(parser: argparse.ArgumentParser):
 def add_training_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("training")
     group.add_argument("--learning_rate", type=float, default=1e-4, help="[TUNABLE] Learning rate.")
-    group.add_argument("--num_epochs", type=int, default=1, help="[TUNABLE] Number of epochs.")
     group.add_argument("--find_unused_parameters", action="store_true", default=False, help="[OPTIONAL] Whether to find unused parameters in DDP.")
     group.add_argument("--weight_decay", type=float, default=0.01, help="[TUNABLE] Weight decay.")
     group.add_argument("--task", type=str, default="sft", help="[OPTIONAL] Task type.")
@@ -147,7 +146,7 @@ def add_training_config(parser: argparse.ArgumentParser):
     group.add_argument("--mixed_precision", type=str, default="bf16", choices=["no", "fp16", "bf16"], help="[OPTIONAL] Mixed precision mode.")
     group.add_argument("--max_timestep_boundary", type=float, default=1.0, help="[OPTIONAL] Max timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
     group.add_argument("--min_timestep_boundary", type=float, default=0.0, help="[OPTIONAL] Min timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
-    group.add_argument("--max_train_steps", type=int, default=None, help="[OPTIONAL] Maximum optimizer steps. If None, train by epochs.")
+    group.add_argument("--max_train_steps", type=int, default=None, help="[KEY] Maximum optimizer steps.")
     group.add_argument("--batch_size", type=int, default=1, help="[TUNABLE] Batch size per GPU.")
     parser.set_defaults(trainable=None)
     return parser
@@ -157,8 +156,7 @@ def add_output_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("output")
     group.add_argument("--output_path", type=str, default="./models", help="[KEY] Output save path.")
     group.add_argument("--remove_prefix_in_ckpt", type=str, default="pipe.dit.", help='[OPTIONAL] Remove prefix in ckpt. (default: "pipe.dit.")')
-    group.add_argument("--save_steps", type=int, default=None, help="[OPTIONAL] Number of checkpoint saving intervals. If None, checkpoints will be saved every epoch.")
-    group.add_argument("--ckpt_path", type=str, default=None, help="[OPTIONAL] Path to model checkpoint (.safetensors) used to initialize training weights (model-only resume).")
+    group.add_argument("--save_steps", type=int, default=None, help="[KEY] Optimizer-step interval for checkpoint saving.")
     group.add_argument("--resume_from", type=str, default=None, help="[OPTIONAL] Path to a full training state directory saved by accelerator (e.g., output_path/states/latest).")
     return parser
 
@@ -193,6 +191,7 @@ def add_tracking_config(parser: argparse.ArgumentParser):
 
 def add_infer_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("infer")
+    group.add_argument("--ckpt_path", type=str, default=None, help="[OPTIONAL] Path to model checkpoint (.safetensors) used for inference.")
     group.add_argument("--cfg_scale", type=float, default=5.0, help="[OPTIONAL] CFG scale for generation.")
     group.add_argument("--num_inference_steps", type=int, default=50, help="[OPTIONAL] Number of inference steps.")
     group.add_argument("--negative_prompt", type=str, default="The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion", help="[OPTIONAL] Negative prompt for generation.")

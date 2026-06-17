@@ -18,56 +18,32 @@ def launch_training_task(
     dataset,
     model,
     model_logger,
-    learning_rate=1e-5,
-    weight_decay=1e-2,
-    num_workers=1,
-    save_steps=None,
-    num_epochs=1,
-    max_train_steps=None,
-    max_grad_norm=1.0,
-    args=None,
+    args,
 ):
-    resume_from = None
-    ckpt_path = None
-    dataset_repeat = 1
-    if args is not None:
-        learning_rate = args.learning_rate
-        weight_decay = args.weight_decay
-        num_workers = args.dataset_num_workers
-        save_steps = args.save_steps
-        num_epochs = args.num_epochs
-        max_train_steps = args.max_train_steps
-        max_grad_norm = args.max_grad_norm
-        resume_from = args.resume_from
-        ckpt_path = args.ckpt_path
-        dataset_repeat = args.dataset_repeat
-    output_path = args.output_path if args is not None else model_logger.output_path
-    if resume_from and ckpt_path:
-        raise ValueError("`--resume_from` and `--ckpt_path` are mutually exclusive. Use only one of them.")
-    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(args.output_path, exist_ok=True)
 
     optimizer_kwargs = {}
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
         optimizer_kwargs = {"foreach": False, "fused": False}
     optimizer = torch.optim.AdamW(
         model.trainable_modules(),
-        lr=learning_rate,
-        weight_decay=weight_decay,
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
         **optimizer_kwargs,
     )
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     dataloader_kwargs = {
         "shuffle": False,
         "collate_fn": lambda x: x[0],
-        "num_workers": num_workers,
+        "num_workers": args.dataset_num_workers,
         "pin_memory": True,
     }
-    if num_workers > 0:
+    if args.dataset_num_workers > 0:
         dataloader_kwargs["persistent_workers"] = True
-        dataloader_kwargs["prefetch_factor"] = 64
+        dataloader_kwargs["prefetch_factor"] = 16
     dataloader = torch.utils.data.DataLoader(dataset, **dataloader_kwargs)
 
-    training_logger = TrainingLogger(accelerator, output_path, args=args)
+    training_logger = TrainingLogger(accelerator, args.output_path, args=args)
     training_logger.init_trackers()
     accelerator.register_for_checkpointing(model_logger)
 
@@ -75,13 +51,13 @@ def launch_training_task(
     initialize_deepspeed_gradient_checkpointing(accelerator)
 
     start_epoch = 0
-    if resume_from:
-        accelerator.print(f"Resuming training from full state: {resume_from}")
-        accelerator.load_state(resume_from)
+    if args.resume_from:
+        accelerator.print(f"Resuming training from full state: {args.resume_from}")
+        accelerator.load_state(args.resume_from)
         start_epoch = model_logger.epoch_id
 
     epoch_id = start_epoch
-    skip_batches = model_logger.batch_in_epoch if resume_from else 0
+    skip_batches = model_logger.batch_in_epoch if args.resume_from else 0
     resume_rng_state = None
     if skip_batches:
         resume_rng_state = {
@@ -92,13 +68,11 @@ def launch_training_task(
         }
     resume_rng_restored = False
     last_step_time = time.monotonic()
-    while max_train_steps is not None or epoch_id < num_epochs:
-        if max_train_steps is not None and model_logger.num_steps >= max_train_steps:
-            break
+    while model_logger.num_steps < args.max_train_steps:
         train_loss = 0.0
         loss_count = 0
         optimizer.zero_grad()
-        epoch_label = (epoch_id + 1) * dataset_repeat - 1
+        epoch_label = (epoch_id + 1) * args.dataset_repeat - 1
 
         epoch_dataloader = skip_first_batches(dataloader, skip_batches) if skip_batches else dataloader
         progress_bar = tqdm(epoch_dataloader, disable=not accelerator.is_local_main_process)
@@ -122,7 +96,7 @@ def launch_training_task(
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
-                    grad_norm = float(accelerator.clip_grad_norm_(model.parameters(), max_grad_norm))
+                    grad_norm = float(accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm))
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
@@ -135,7 +109,7 @@ def launch_training_task(
                     model_logger.on_step_end(
                         accelerator,
                         model,
-                        save_steps,
+                        args.save_steps,
                         epoch_id=epoch_id,
                         batch_in_epoch=batch_idx + 1,
                     )
@@ -159,28 +133,24 @@ def launch_training_task(
                         "lr": learning_rate,
                         "grad_norm": grad_norm,
                     }
-                    if save_steps is not None:
-                        next_save_steps = save_steps - (model_logger.num_steps % save_steps)
-                        if next_save_steps == 0:
-                            next_save_steps = save_steps
-                        eta_steps = next_save_steps
-                        eta_label = "next_save_eta"
-                        if max_train_steps is not None:
-                            remaining_train_steps = max_train_steps - model_logger.num_steps
-                            if remaining_train_steps < eta_steps:
-                                eta_steps = remaining_train_steps
-                                eta_label = "train_end_eta"
-                        postfix["next_save_steps"] = next_save_steps
-                        postfix[eta_label] = str(datetime.timedelta(seconds=max(0, int(step_time * eta_steps))))
+                    next_save_steps = args.save_steps - (model_logger.num_steps % args.save_steps)
+                    if next_save_steps == 0:
+                        next_save_steps = args.save_steps
+                    eta_steps = next_save_steps
+                    eta_label = "next_save_eta"
+                    remaining_train_steps = args.max_train_steps - model_logger.num_steps
+                    if remaining_train_steps < eta_steps:
+                        eta_steps = remaining_train_steps
+                        eta_label = "train_end_eta"
+                    postfix["next_save_steps"] = next_save_steps
+                    postfix[eta_label] = str(datetime.timedelta(seconds=max(0, int(step_time * eta_steps))))
                     training_logger.update_progress_bar(progress_bar, postfix)
 
-                    if max_train_steps is not None and model_logger.num_steps >= max_train_steps:
+                    if model_logger.num_steps >= args.max_train_steps:
                         break
         skip_batches = 0
-        if save_steps is None:
-            model_logger.on_epoch_end(accelerator, model, epoch_label, progress_epoch_id=epoch_id + 1)
         epoch_id += 1
-    model_logger.on_training_end(accelerator, model, save_steps)
+    model_logger.on_training_end(accelerator, model, args.save_steps)
     training_logger.close()
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()

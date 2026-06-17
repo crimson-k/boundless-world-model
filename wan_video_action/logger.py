@@ -109,39 +109,20 @@ class ModelLogger(DiffSynthModelLogger):
         self,
         accelerator,
         model,
-        save_steps=None,
-        epoch_id=None,
-        batch_in_epoch=None,
-        save_full_state=True,
-        **kwargs,
+        save_steps,
+        epoch_id,
+        batch_in_epoch,
     ):
         self.num_steps += 1
-        if epoch_id is not None and batch_in_epoch is not None:
-            self.set_progress(epoch_id, batch_in_epoch)
-        if save_steps is not None and self.num_steps % save_steps == 0:
+        self.set_progress(epoch_id, batch_in_epoch)
+        if self.num_steps % save_steps == 0:
             self.save_model(accelerator, model, f"step-{self.num_steps}.safetensors")
-            if save_full_state:
-                self.save_training_state(accelerator)
-
-    def on_epoch_end(
-        self,
-        accelerator,
-        model,
-        epoch_id,
-        progress_epoch_id=None,
-        save_full_state=True,
-    ):
-        if progress_epoch_id is not None:
-            self.set_progress(progress_epoch_id, 0)
-        self.save_model(accelerator, model, f"epoch-{epoch_id}.safetensors")
-        if save_full_state:
             self.save_training_state(accelerator)
 
-    def on_training_end(self, accelerator, model, save_steps=None, save_full_state=True):
-        if save_steps is not None and self.num_steps % save_steps != 0:
+    def on_training_end(self, accelerator, model, save_steps):
+        if self.num_steps % save_steps != 0:
             self.save_model(accelerator, model, f"step-{self.num_steps}.safetensors")
-            if save_full_state:
-                self.save_training_state(accelerator)
+            self.save_training_state(accelerator)
 
     def save_model(self, accelerator, model, file_name):
         accelerator.wait_for_everyone()
