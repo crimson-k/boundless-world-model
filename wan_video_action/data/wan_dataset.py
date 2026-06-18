@@ -18,7 +18,7 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         main_data_operator=lambda x: x,
         special_operator_map: Optional[dict] = None,
         sample_indices: Optional[Iterable[int]] = None,
-        temporal_template_sampling: bool = False,
+        enable_first_frame_anchor: bool = False,
         temporal_num_frames: Optional[int] = None,
         temporal_num_history_frames: int = 1,
         temporal_align_to_vae_latent: bool = False,
@@ -30,7 +30,7 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         self.main_data_operator = main_data_operator
         self.special_operator_map = {} if special_operator_map is None else dict(special_operator_map)
         self.sample_indices = None if sample_indices is None else [int(index) for index in sample_indices]
-        self.temporal_template_sampling = bool(temporal_template_sampling)
+        self.enable_first_frame_anchor = bool(enable_first_frame_anchor)
         self.temporal_num_frames = None if temporal_num_frames is None else int(temporal_num_frames)
         self.temporal_num_history_frames = int(temporal_num_history_frames)
         self.temporal_align_to_vae_latent = bool(temporal_align_to_vae_latent)
@@ -93,7 +93,7 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         return start_frame, end_frame
 
     def _build_temporal_sample_info(self, data):
-        if not self.temporal_template_sampling or not isinstance(data, dict):
+        if not isinstance(data, dict):
             return None
 
         num_frames = self.temporal_num_frames
@@ -104,12 +104,13 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
             return None
         if (num_history_frames - 1) % 4 != 0:
             raise ValueError(
-                "`num_history_frames - 1` must be divisible by 4 when history_template_sampling is enabled."
+                "`num_history_frames - 1` must be divisible by 4 when num_history_frames > 1."
             )
 
         start_frame, end_frame = self._resolve_frame_range(data)
         future_len = int(num_frames - num_history_frames)
-        lower = max(1, start_frame)
+        history_tail_count = num_history_frames - 1 if self.enable_first_frame_anchor else num_history_frames
+        lower = max(1 if self.enable_first_frame_anchor else 0, start_frame + history_tail_count)
         upper = end_frame
         raw_length = data.get("raw_length")
         raw_end = None
@@ -134,10 +135,10 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         else:
             future_start = lower
 
-        history_indices = [0]
-        history_tail_start = future_start - (num_history_frames - 1)
+        history_indices = [0] if self.enable_first_frame_anchor else []
+        history_tail_start = future_start - history_tail_count
         history_indices.extend(
-            max(0, history_tail_start + offset) for offset in range(num_history_frames - 1)
+            max(0, history_tail_start + offset) for offset in range(history_tail_count)
         )
 
         future_indices = [future_start + offset for offset in range(future_len)]
@@ -180,7 +181,7 @@ def build_robotwin_train_dataset(args) -> RoboTwinUnifiedDataset:
     keys = tuple(args.data_keys)
 
     special_operator_map = {}
-    if args.modes["text"] != "none":
+    if args.text_mode != "none":
         for key in ("prompt_emb", "negative_prompt_emb"):
             if key in keys:
                 special_operator_map[key] = ResolvePromptEmbPath(base_path=args.dataset_base_path)
@@ -215,10 +216,10 @@ def build_robotwin_train_dataset(args) -> RoboTwinUnifiedDataset:
             resize_mode=args.resize_mode,
         ),
         special_operator_map=special_operator_map,
-        temporal_template_sampling=bool(args.history_template_sampling),
+        enable_first_frame_anchor=bool(args.enable_first_frame_anchor),
         temporal_num_frames=int(args.num_frames),
         temporal_num_history_frames=int(args.num_history_frames),
-        temporal_align_to_vae_latent=(args.modes["vae"] == "emb"),
+        temporal_align_to_vae_latent=(args.vae_mode == "emb"),
     )
 
 

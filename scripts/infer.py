@@ -13,7 +13,7 @@ import torch
 
 from diffsynth.core import ModelConfig
 from wan_video_action.data import build_infer_dataset
-from wan_video_action.parsers import add_general_config, merge_yaml_and_args, prepare_model_config, resolve_data_keys
+from wan_video_action.parsers import add_general_config, merge_yaml_and_args, resolve_model_paths, resolve_data_keys
 from wan_video_action.pipelines.wan_video_action import build_wan_video_action_pipeline
 from wan_video_action.utils import align_num_frames, resolve_model_path, save_video
 
@@ -142,10 +142,10 @@ def _run_autoregressive(
     return output_path
 
 
-def build_pipeline(args, model_config):
+def build_pipeline(args):
     model_configs = [
         ModelConfig(path=resolve_model_path(model_path))
-        for model_path in model_config["model_paths_list"]
+        for model_path in args.model_paths_list
     ]
 
     print("[resolved_models] model_configs:", [config.path for config in model_configs])
@@ -160,7 +160,7 @@ def build_pipeline(args, model_config):
         tokenizer_config=None,
         ckpt_path=args.ckpt_path,
         action_dim=args.action_dim,
-        action_mode=args.modes["action"],
+        action_mode=args.action_mode,
     )
     pipe.use_gradient_checkpointing = False
     pipe.use_gradient_checkpointing_offload = False
@@ -197,14 +197,17 @@ def prepare_sample_for_rollout(sample: Dict, sample_index: int, pipe, args) -> D
 
 def main():
     args = parse_args()
-    model_config = prepare_model_config(args)
-    args = resolve_data_keys(args, stage="infer")
-    print("[resolved_config] model_paths:", args.model_paths)
+    args = resolve_model_paths(args)
+    args = resolve_data_keys(args)
+    print("[resolved_config] model_root_path:", args.model_root_path)
     print("[resolved_config] model_config_path:", args.model_config_path)
-    print("[resolved_config] resolved_model_paths:", model_config["model_paths_list"])
-    print("[resolved_config] model.weights:", args.weights)
+    print("[resolved_config] resolved_model_paths:", args.model_paths_list)
+    print("[resolved_config] model.load_modules:", args.load_modules)
     print("[resolved_config] dataset.data_keys:", args.data_keys)
     print("[resolved_config] model.modes:", args.modes)
+    print("[resolved_config] text_mode:", args.text_mode)
+    print("[resolved_config] vae_mode:", args.vae_mode)
+    print("[resolved_config] action_mode:", args.action_mode)
     print("[resolved_config] dataset_base_path:", args.dataset_base_path)
     print("[resolved_config] dataset_metadata_path:", args.dataset_metadata_path)
     print("[resolved_config] action_stat_path:", args.action_stat_path)
@@ -225,7 +228,7 @@ def main():
     os.makedirs(args.output_path, exist_ok=True)
     dataset = build_infer_dataset(args)
 
-    pipe = build_pipeline(args, model_config)
+    pipe = build_pipeline(args)
 
     processed = 0
     for sample_index in range(args.start_index, len(dataset)):

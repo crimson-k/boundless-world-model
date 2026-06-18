@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 from wan_video_action.data import build_train_dataset
 from wan_video_action.logger import ModelLogger
 from wan_video_action.loss import FlowMatchSFTLossWanAction
-from wan_video_action.parsers import merge_yaml_and_args, prepare_model_config, resolve_data_keys, add_general_config
+from wan_video_action.parsers import merge_yaml_and_args, resolve_model_paths, resolve_data_keys, add_general_config
 from wan_video_action.pipelines.wan_video_action import build_wan_video_action_pipeline
 from wan_video_action.runner import launch_training_task
 from wan_video_action.utils import set_global_seed
@@ -46,7 +46,6 @@ class WanTrainingModule(DiffusionTrainingModule):
         max_timestep_boundary=1.0,
         min_timestep_boundary=0.0,
         num_history_frames=1,
-        history_template_sampling=0,
         action_dim=14,
         action_mode="adaln",
         args=None,
@@ -55,7 +54,7 @@ class WanTrainingModule(DiffusionTrainingModule):
 
         # Load models
         model_configs = self.parse_model_configs(model_paths, model_id_with_origin_paths, fp8_models=fp8_models, offload_models=offload_models, device=device)
-        if args.modes["text"] == "t5":
+        if args.text_mode == "t5":
             tokenizer_config = ModelConfig(tokenizer_path)
         else:
             tokenizer_config = None
@@ -94,8 +93,7 @@ class WanTrainingModule(DiffusionTrainingModule):
         self.max_timestep_boundary = max_timestep_boundary
         self.min_timestep_boundary = min_timestep_boundary
         self.num_history_frames = num_history_frames
-        self.history_template_sampling = int(history_template_sampling)
-        self.use_precomputed_latents = args.modes["vae"] == "emb"
+        self.use_precomputed_latents = args.vae_mode == "emb"
 
     def parse_extra_inputs(self, data, extra_inputs, inputs_shared):
         for extra_input in extra_inputs:
@@ -150,7 +148,6 @@ class WanTrainingModule(DiffusionTrainingModule):
             "width": width,
             "num_frames": sample_num_frames,
             "num_history_frames": self.num_history_frames,
-            "history_template_sampling": self.history_template_sampling,
             "temporal_future_start": data.get("temporal_future_start"),
             "cfg_scale": 1,
             "tiled": False,
@@ -188,27 +185,25 @@ if __name__ == "__main__":
         args = merge_yaml_and_args(args.config, parser, args)
 
     set_global_seed(args.seed, deterministic=args.deterministic)
-    model_config = prepare_model_config(args)
-    args = resolve_data_keys(args, stage="train")
+    args = resolve_model_paths(args)
+    args = resolve_data_keys(args)
     trainable_models = ",".join(args.trainable)
 
     print("[resolved_config] model_config_path:", args.model_config_path)
-    print("[resolved_config] model_paths:", args.model_paths)
-    print("[resolved_config] resolved_model_paths:", model_config["model_paths_list"])
-    print("[resolved_config] model.weights:", args.weights)
+    print("[resolved_config] model_root_path:", args.model_root_path)
+    print("[resolved_config] resolved_model_paths:", args.model_paths_list)
+    print("[resolved_config] model.load_modules:", args.load_modules)
     print("[resolved_config] dataset.data_keys:", args.data_keys)
     print("[resolved_config] training.trainable:", args.trainable)
     print("[resolved_config] model.modes:", args.modes)
-    print("[resolved_config] dit_mode:", args.modes["dit"])
-    print("[resolved_config] text_mode:", args.modes["text"])
-    print("[resolved_config] image_mode:", args.modes["image"])
-    print("[resolved_config] vae_mode:", args.modes["vae"])
-    print("[resolved_config] action_mode:", args.modes["action"])
+    print("[resolved_config] text_mode:", args.text_mode)
+    print("[resolved_config] vae_mode:", args.vae_mode)
+    print("[resolved_config] action_mode:", args.action_mode)
     print("[resolved_config] action_type:", args.action_type)
     print("[resolved_config] trainable_models:", trainable_models)
     print("[resolved_config] height,width,num_frames:", args.height, args.width, args.num_frames)
     print("[resolved_config] num_history_frames:", args.num_history_frames)
-    print("[resolved_config] history_template_sampling:", args.history_template_sampling)
+    print("[resolved_config] enable_first_frame_anchor:", args.enable_first_frame_anchor)
     print("[resolved_config] spatial_division_factor:", args.spatial_division_factor)
     print("[resolved_config] max_train_steps:", args.max_train_steps)
     print("[resolved_config] deterministic:", args.deterministic)
@@ -223,9 +218,9 @@ if __name__ == "__main__":
     dataset = build_train_dataset(args)
 
     model = WanTrainingModule(
-        model_paths=json.dumps(model_config["model_paths_list"]),
+        model_paths=json.dumps(args.model_paths_list),
         model_id_with_origin_paths=args.model_id_with_origin_paths,
-        tokenizer_path=model_config["tokenizer_path"],
+        tokenizer_path=args.tokenizer_path,
         trainable_models=trainable_models,
         lora_base_model=args.lora_base_model,
         lora_target_modules=args.lora_target_modules,
@@ -244,9 +239,8 @@ if __name__ == "__main__":
         max_timestep_boundary=args.max_timestep_boundary,
         min_timestep_boundary=args.min_timestep_boundary,
         num_history_frames=args.num_history_frames,
-        history_template_sampling=args.history_template_sampling,
         action_dim=args.action_dim,
-        action_mode=args.modes["action"],
+        action_mode=args.action_mode,
         args=args,
     )
 

@@ -9,7 +9,7 @@ from .models import WanVideoActionEncoder
 from .data import LoadCobotAction
 from .parsers import (
     merge_yaml_and_args,
-    prepare_model_config,
+    resolve_model_paths,
     add_general_config,
 )
 from .loss import FlowMatchSFTLossWanAction
@@ -22,7 +22,7 @@ __all__ = [
     "model_fn_wan_video_action",
     "LoadCobotAction",
     "merge_yaml_and_args",
-    "prepare_model_config",
+    "resolve_model_paths",
     "add_general_config",
     "FlowMatchSFTLossWanAction",
     "launch_training_task",

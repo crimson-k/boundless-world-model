@@ -12,24 +12,25 @@ def merge_yaml_and_args(yaml_path, parser, args, cli_args=None):
 
     if cli_args is None:
         cli_args = sys.argv[1:]
-    explicit_cli_keys = {
-        action.dest
-        for action in parser._actions
-        for option in action.option_strings
-        if option in cli_args
-    }
+
+    explicit_cli_keys = set()
+    for action in parser._actions:
+        for option in action.option_strings:
+            if option in cli_args:
+                explicit_cli_keys.add(action.dest)
+
     yaml_dict = OmegaConf.to_container(OmegaConf.load(yaml_path), resolve=True) or {}
 
     for section in yaml_dict.values():
         if isinstance(section, dict):
             for key, value in section.items():
-                if hasattr(args, key) and key not in explicit_cli_keys:
+                if key not in explicit_cli_keys:
                     setattr(args, key, value)
     return args
 
 
 def _expand_safetensors_index(path: str):
-    if not str(path).endswith(".safetensors.index.json") or not os.path.isfile(path):
+    if not str(path).endswith(".safetensors.index.json"):
         return path
     with open(path, "r", encoding="utf-8") as f:
         weight_map = json.load(f)["weight_map"]
@@ -37,45 +38,28 @@ def _expand_safetensors_index(path: str):
     return [os.path.join(os.path.dirname(path), shard_name) for shard_name in shard_names]
 
 
-def _resolve_model_paths(model_root: str, model_config_path: str, weight_modules):
-    cfg = OmegaConf.to_container(OmegaConf.load(model_config_path), resolve=True)
+def resolve_model_paths(args):
+    cfg = OmegaConf.to_container(OmegaConf.load(args.model_config_path), resolve=True)
     module_files = cfg["modules"]
     paths = []
-    for module in weight_modules:
+    for module in args.load_modules:
         rel_path = module_files[module]
-        path = rel_path if os.path.isabs(rel_path) else os.path.join(model_root, rel_path)
+        path = os.path.join(args.model_root_path, rel_path)
         paths.append(_expand_safetensors_index(path))
-    return paths
+    args.model_paths_list = paths
+    args.tokenizer_path = os.path.join(args.model_root_path, cfg["tokenizer_subdir"])
+    return args
 
-
-def prepare_model_config(args):
-    # cli args override yaml config, if provided
-    for mode_name in args.modes.keys():
-        value = getattr(args, f"{mode_name}_mode")
-        if value is not None:
-            args.modes[mode_name] = value
-
-    model_paths_list = _resolve_model_paths(args.model_paths, args.model_config_path, args.weights)
-
-    cfg = OmegaConf.to_container(OmegaConf.load(args.model_config_path), resolve=True)
-    tokenizer_path = os.path.join(args.model_paths, cfg["tokenizer_subdir"])
-
-    return {
-        "model_paths_list": model_paths_list,
-        "tokenizer_path": tokenizer_path,
-    }
-
-
-def resolve_data_keys(args, stage="train"):
-    if stage == "infer" or args.modes["vae"] == "raw":
+def resolve_data_keys(args):
+    if args.stage == "infer" or args.vae_mode == "raw":
         keys = ["video"]
     else:
         keys = ["latents"]
 
-    if args.modes["action"] != "none":
+    if args.action_mode != "none":
         keys.append("action")
 
-    if args.modes["text"] == "emb":
+    if args.text_mode == "emb":
         keys.extend(["prompt_emb", "negative_prompt_emb"])
 
     args.data_keys = keys
@@ -104,32 +88,30 @@ def add_video_size_config(parser: argparse.ArgumentParser):
     group.add_argument("--time_division_factor", type=int, default=4, help="[OPTIONAL] Temporal frame divisor used to align video/action frame counts.")
     group.add_argument("--time_division_remainder", type=int, default=1, help="[OPTIONAL] Temporal frame remainder used with time_division_factor.")
     group.add_argument("--spatial_division_factor", type=int, default=32, help="[OPTIONAL] Spatial size divisor used to align frame height and width.")
-    group.add_argument("--chunk_mode", type=str, default="static", choices=["static", "dynamic"], help="[OPTIONAL] Sampling mode for video chunks, static uses dataset bounds and dynamic uses random crop.")
-    group.add_argument("--history_template_sampling", type=int, choices=[0, 1], default=0, help="[OPTIONAL] Enable history-template sampling: frame0 + recent history + future frames.")
+    group.add_argument("--enable_first_frame_anchor", action="store_true", default=False, help="[OPTIONAL] Include frame 0 as a fixed history anchor when num_history_frames > 1.")
     return parser
 
 
 def add_model_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("model")
-    group.add_argument("--model_paths", type=str, default=None, help="[REQUIRED] Paths to load models. In JSON format, comma-separated, or a single model root.")
+    group.add_argument("--model_root_path", type=str, default=None, help="[REQUIRED] Root directory of the pretrained model.")
     group.add_argument("--model_id_with_origin_paths", type=str, default=None, help="[OPTIONAL] Model ID with origin paths, e.g., Wan-AI/Wan2.1-T2V-1.3B:diffusion_pytorch_model*.safetensors. Comma-separated.")
+    group.add_argument("--load_modules", nargs="+", default=["dit", "vae"], help="[KEY] Model modules to load.")
     group.add_argument("--extra_inputs", type=str, default=None, help="[OPTIONAL] Additional model inputs, comma-separated.")
     group.add_argument("--fp8_models", type=str, default=None, help="[OPTIONAL] Models with FP8 precision, comma-separated.")
     group.add_argument("--offload_models", type=str, default=None, help="[OPTIONAL] Models with offload, comma-separated. Only used in splited training.")
     group.add_argument("--model_config_path", type=str, default="configs/model/wan2_1_fun_1_3b_inp.yaml", help="[KEY] Path to model config YAML.")
     group.add_argument("--initialize_model_on_cpu", action="store_true", default=False, help="[OPTIONAL] Whether to initialize models on CPU.")
-    group.add_argument("--dit_mode", type=str, default=None, choices=["default", "none"], help="[OPTIONAL] Override model.modes.dit.")
-    group.add_argument("--text_mode", type=str, default=None, choices=["t5", "emb", "none"], help="[OPTIONAL] Override model.modes.text.")
-    group.add_argument("--vae_mode", type=str, default=None, choices=["raw", "emb", "none"], help="[OPTIONAL] Override model.modes.vae.")
-    group.add_argument("--image_mode", type=str, default=None, choices=["none", "default", "flat"], help="[OPTIONAL] Override model.modes.image.")
-    group.add_argument("--action_mode", type=str, default=None, choices=["noise", "adaln", "none"], help="[OPTIONAL] Override model.modes.action.")
-    parser.set_defaults(weights=None, modes=None)
+    group.add_argument("--stage", type=str, default="train", choices=["train", "infer"], help="[KEY] Runtime stage used to resolve dataset keys.")
+    group.add_argument("--text_mode", type=str, default=None, choices=["t5", "emb", "none"], help="[KEY] Text conditioning mode.")
+    group.add_argument("--vae_mode", type=str, default=None, choices=["raw", "emb"], help="[KEY] Video latent mode.")
+    group.add_argument("--action_mode", type=str, default=None, choices=["noise", "adaln", "none"], help="[KEY] Action conditioning mode.")
     return parser
 
 
 def add_action_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("action")
-    group.add_argument("--action_type", type=str, choices=["joint_abs", "eef_abs", "joint_delta", "eef_delta", "state_joint", "state_pose", "action_joint", "action_pose"], default="eef_delta", help='[KEY] Action/state representation: joint/eef x abs/delta, with state_* and action_* aliases.')
+    group.add_argument("--action_type", type=str, choices=["joint_abs", "eef_abs", "joint_delta", "eef_delta"], default="eef_delta", help="[KEY] Action/state representation: joint/eef x abs/delta.")
     group.add_argument("--action_stat_path", type=str, default=None, help="[OPTIONAL] Path to robot normalization stats (stat.json).")
     group.add_argument("--action_dim", type=int, default=14, help="[OPTIONAL] Action dimension.")
     return parser
@@ -149,7 +131,6 @@ def add_training_config(parser: argparse.ArgumentParser):
     group.add_argument("--min_timestep_boundary", type=float, default=0.0, help="[OPTIONAL] Min timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
     group.add_argument("--max_train_steps", type=int, default=None, help="[OPTIONAL] Maximum optimizer steps. If None, train by epochs.")
     group.add_argument("--batch_size", type=int, default=1, help="[TUNABLE] Batch size per GPU.")
-    parser.set_defaults(trainable=None)
     return parser
 
 
@@ -198,9 +179,14 @@ def add_infer_config(parser: argparse.ArgumentParser):
     group.add_argument("--negative_prompt", type=str, default="The video is not of a high quality, it has a low resolution. Watermark present in each frame. The background is solid. Strange body and strange trajectory. Distortion", help="[OPTIONAL] Negative prompt for generation.")
     group.add_argument("--negative_prompt_emb", type=str, default=None, help="[OPTIONAL] Path to the pre-extracted negative prompt embedding.")
     group.add_argument("--quality", type=int, default=5, help="[OPTIONAL] Output video quality.")
-    group.add_argument("--disable_chunk_infer", dest="chunk_infer", action="store_false", default=True, help="[OPTIONAL] Disable chunked inference with 81-frame segments.")
+    group.add_argument("--enable_chunk_infer", action="store_true", default=False, help="[OPTIONAL] Enable chunked inference with 81-frame segments.")
     group.add_argument("--fps", type=int, default=24, help="[OPTIONAL] Output video FPS.")
-    group.add_argument("--disable_metrics", dest="enable_metrics", action="store_false", default=True, help="[OPTIONAL] Disable evaluation metrics.")
+    group.add_argument("--enable_metrics", action="store_true", default=False, help="[OPTIONAL] Enable evaluation metrics.")
+    return parser
+
+
+def add_debug_config(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("debug")
     group.add_argument("--start_index", type=int, default=0, help="[OPTIONAL] First metadata row index to process.")
     group.add_argument("--max_samples", type=int, default=0, help="[OPTIONAL] Maximum number of metadata rows to process. 0 means all.")
     return parser
@@ -223,4 +209,5 @@ def add_general_config(parser: argparse.ArgumentParser):
     parser = add_gradient_config(parser)
     parser = add_tracking_config(parser)
     parser = add_infer_config(parser)
+    parser = add_debug_config(parser)
     return parser
