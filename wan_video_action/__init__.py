@@ -1,7 +1,7 @@
 __version__ = "0.1.0-debug"
 
 from .pipelines.wan_video_action import (
-    build_wan_video_action_pipeline,
+    WanVideoActionPipeline,
     WanVideoUnit_ActionEmbedder,
     model_fn_wan_video_action,
 )
@@ -16,7 +16,7 @@ from .loss import FlowMatchSFTLossWanAction
 from .runner import launch_training_task
 
 __all__ = [
-    "build_wan_video_action_pipeline",
+    "WanVideoActionPipeline",
     "WanVideoActionEncoder",
     "WanVideoUnit_ActionEmbedder",
     "model_fn_wan_video_action",

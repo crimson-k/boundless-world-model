@@ -3,7 +3,7 @@ from tqdm import tqdm
 from typing import Optional, Union
 from einops import rearrange
 
-from diffsynth.pipelines.wan_video import WanVideoPipeline
+from diffsynth.pipelines.wan_video import WanVideoPipeline, WanVideoUnit_ShapeChecker
 from diffsynth.diffusion.base_pipeline import PipelineUnit
 from diffsynth.core.device.npu_compatible_device import get_device_type
 from diffsynth.core import ModelConfig, load_state_dict
@@ -12,19 +12,57 @@ from diffsynth.models.wan_video_dit import sinusoidal_embedding_1d
 from ..models.wan_video_action_encoder import WanVideoActionEncoder
 
 
-def _build_wan2_action_units(pipe: WanVideoPipeline):
-    selected = [
-        unit for unit in pipe.units
-        if unit.__class__.__name__ == "WanVideoUnit_ShapeChecker"
-    ]
-    selected.append(WanVideoUnit_NoiseInitializer())
-    selected.append(WanVideoUnit_InputVideoEmbedder())
-    selected.append(WanVideoUnit_ImageEmbedderFused())
-    selected.append(WanVideoUnit_ActionEmbedder())
-    return selected
+class WanVideoActionPipeline(WanVideoPipeline):
+    @classmethod
+    def from_pretrained(
+        cls,
+        torch_dtype: torch.dtype = torch.bfloat16,
+        device: Union[str, torch.device] = get_device_type(),
+        model_configs: list[ModelConfig] = None,
+        tokenizer_config: ModelConfig = None,
+        redirect_common_files: bool = True,
+        vram_limit: float = None,
+        ckpt_path: Optional[str] = None,
+        action_dim: int = 14,
+        action_mode: str = "adaln",
+    ):
+        pipe = super().from_pretrained(
+            torch_dtype=torch_dtype,
+            device=device,
+            model_configs=model_configs,
+            tokenizer_config=tokenizer_config,
+            redirect_common_files=redirect_common_files,
+            vram_limit=vram_limit,
+        )
+        pipe.__class__ = cls
+        pipe.dit.use_text_embedding = False
+        pipe.dit.has_text_input = True
+        pipe.dit.has_image_input = False
+        pipe.dit.fuse_vae_embedding_in_latents = True
 
+        pipe.action_encoder = WanVideoActionEncoder(
+            action_dim=int(action_dim),
+            dim=pipe.dit.dim,
+        )
+        pipe.action_encoder = pipe.action_encoder.to(dtype=pipe.torch_dtype, device=pipe.device)
+        pipe.action_encoder.eval()
+        pipe.action_injection_mode = action_mode
 
-def _install_wan_video_action_call(pipeline: WanVideoPipeline) -> None:
+        if ckpt_path is not None:
+            load_checkpoint_weights(pipe, ckpt_path)
+
+        pipe.units = [
+            WanVideoUnit_ShapeChecker(),
+            WanVideoUnit_NoiseInitializer(),
+            WanVideoUnit_InputVideoEmbedder(),
+            WanVideoUnit_ImageEmbedderFused(),
+            WanVideoUnit_ActionEmbedder(),
+        ]
+
+        pipe.model_fn = model_fn_wan_video_action
+
+        return pipe
+
     @torch.no_grad()
     def __call__(
         self: WanVideoPipeline,
@@ -43,7 +81,6 @@ def _install_wan_video_action_call(pipeline: WanVideoPipeline) -> None:
         tiled: bool = True,
         tile_size: tuple[int, int] = (30, 52),
         tile_stride: tuple[int, int] = (15, 26),
-        use_history_condition_noise_in_inference: bool = False,
         progress_bar_cmd=tqdm,
         output_type: str = "quantized",
         **_: dict,
@@ -68,7 +105,6 @@ def _install_wan_video_action_call(pipeline: WanVideoPipeline) -> None:
             "tiled": tiled,
             "tile_size": tile_size,
             "tile_stride": tile_stride,
-            "use_history_condition_noise_in_inference": use_history_condition_noise_in_inference,
         }
 
         for unit in self.units:
@@ -117,7 +153,7 @@ def _install_wan_video_action_call(pipeline: WanVideoPipeline) -> None:
             pass
         else:
             raise ValueError(f"Unsupported output_type='{output_type}', expected 'quantized' or 'floatpoint'.")
-        if use_history_condition_noise_in_inference and history_t > 0:
+        if history_t > 0:
             history_to_copy = min(
                 int(num_history_frames),
                 int(video.shape[2]),
@@ -131,24 +167,108 @@ def _install_wan_video_action_call(pipeline: WanVideoPipeline) -> None:
 
         return video
 
-    if getattr(pipeline, "_wrapped_call_class", None) is not None:
-        WrappedPipeline = pipeline._wrapped_call_class
+
+def model_fn_wan_video_action(
+    dit,
+    latents: torch.Tensor = None,
+    timestep: torch.Tensor = None,
+    context: torch.Tensor = None,
+    action_emb: Optional[torch.Tensor] = None,
+    action_mod_emb: Optional[torch.Tensor] = None,
+    clip_feature: Optional[torch.Tensor] = None,
+    y: Optional[torch.Tensor] = None,
+    fuse_vae_embedding_in_latents: bool = False,
+    fused_condition_latent_frames: Optional[int] = None,
+    use_gradient_checkpointing: bool = False,
+    use_gradient_checkpointing_offload: bool = False,
+    **kwargs,
+):
+    if dit.seperated_timestep and fuse_vae_embedding_in_latents:
+        condition_t = 1 if fused_condition_latent_frames is None else int(fused_condition_latent_frames)
+        condition_t = max(0, min(condition_t, latents.shape[2]))
+        spatial_token_count = latents.shape[3] * latents.shape[4] // 4
+        t = torch.concat(
+            [
+                torch.zeros((condition_t, spatial_token_count), dtype=latents.dtype, device=latents.device),
+                torch.ones((latents.shape[2] - condition_t, spatial_token_count), dtype=latents.dtype, device=latents.device) * timestep,
+            ]
+        ).flatten()
+        t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, t).unsqueeze(0))
     else:
-        WrappedPipeline = type(
-            f"{pipeline.__class__.__name__}ActionPatched",
-            (pipeline.__class__,),
-            {},
-        )
-        WrappedPipeline.__call__ = __call__
-        pipeline._wrapped_call_class = WrappedPipeline
-    pipeline.__class__ = WrappedPipeline
+        t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep))
 
+    text_token_count = 0
+    use_text_embedding = getattr(dit, "use_text_embedding", getattr(dit, "has_text_input", True))
+    has_text_input = getattr(dit, "has_text_input", True)
 
-def configure_ti2v_text_off_dit(dit):
-    dit.use_text_embedding = False
-    dit.has_text_input = True
-    dit.has_image_input = False
-    dit.fuse_vae_embedding_in_latents = True
+    if use_text_embedding and context is not None:
+        context = dit.text_embedding(context)
+        text_token_count = context.shape[1]
+    elif not has_text_input:
+        context = None
+    elif not use_text_embedding:
+        context = None
+
+    if context is None:
+        context = action_emb
+    else:
+        context = torch.cat([context, action_emb], dim=1)
+    text_token_count = context.shape[1]
+    num_spatial_tokens = t.shape[1] // action_mod_emb.shape[1]
+    action_mod_emb = action_mod_emb.unsqueeze(2).repeat(1, 1, num_spatial_tokens, 1).flatten(1, 2)
+    t = t + action_mod_emb
+
+    if t.ndim == 3:
+        t_mod = dit.time_projection(t).unflatten(2, (6, dit.dim))
+    else:
+        t_mod = dit.time_projection(t).unflatten(1, (6, dit.dim))
+
+    x = latents
+
+    if y is not None and dit.has_image_input and dit.require_vae_embedding:
+        x = torch.cat([x, y], dim=1)
+
+    if clip_feature is not None and dit.has_image_input and dit.require_clip_embedding:
+        clip_embdding = dit.img_emb(clip_feature)
+        if context is None:
+            context = clip_embdding
+        else:
+            context = torch.cat([clip_embdding, context], dim=1)
+
+    x = dit.patchify(x)
+    f, h, w = x.shape[2:]
+
+    x = rearrange(x, 'b c f h w -> b (f h w) c').contiguous()
+
+    freqs = torch.cat([
+        dit.freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
+        dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
+        dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1),
+    ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
+
+    for block in dit.blocks:
+        if hasattr(block, "cross_attn") and hasattr(block.cross_attn, "text_token_count"):
+            block.cross_attn.text_token_count = text_token_count
+        if use_gradient_checkpointing_offload:
+            with torch.autograd.graph.save_on_cpu():
+                x = torch.utils.checkpoint.checkpoint(
+                    block,
+                    x, context, t_mod, freqs,
+                    use_reentrant=False,
+                )
+        elif use_gradient_checkpointing:
+            x = torch.utils.checkpoint.checkpoint(
+                block,
+                x, context, t_mod, freqs,
+                use_reentrant=False,
+            )
+        else:
+            x = block(x, context, t_mod, freqs)
+
+    x = dit.head(x, t)
+    x = dit.unpatchify(x, (f, h, w))
+
+    return x
 
 
 def load_checkpoint_weights(pipe, ckpt_path: str):
@@ -185,45 +305,6 @@ def load_checkpoint_weights(pipe, ckpt_path: str):
         f"  - Loaded action_encoder keys: {len(action_state)} "
         f"(missing={len(action_result.missing_keys)}, unexpected={len(action_result.unexpected_keys)})"
     )
-
-
-def build_wan_video_action_pipeline(
-    torch_dtype: torch.dtype = torch.bfloat16,
-    device: Union[str, torch.device] = get_device_type(),
-    model_configs: list[ModelConfig] = None,
-    tokenizer_config: ModelConfig = None,
-    redirect_common_files: bool = True,
-    vram_limit: float = None,
-    ckpt_path: Optional[str] = None,
-    action_dim: int = 14,
-    action_mode: str = "adaln",
-):
-    pipe = WanVideoPipeline.from_pretrained(
-        torch_dtype=torch_dtype,
-        device=device,
-        model_configs=model_configs,
-        tokenizer_config=tokenizer_config,
-        redirect_common_files=redirect_common_files,
-        vram_limit=vram_limit,
-    )
-    configure_ti2v_text_off_dit(pipe.dit)
-
-    pipe.action_encoder = WanVideoActionEncoder(
-        action_dim=int(action_dim),
-        dim=pipe.dit.dim,
-    )
-    pipe.action_encoder = pipe.action_encoder.to(dtype=pipe.torch_dtype, device=pipe.device)
-    pipe.action_encoder.eval()
-
-    if ckpt_path is not None:
-        load_checkpoint_weights(pipe, ckpt_path)
-
-    pipe.units = _build_wan2_action_units(pipe)
-    pipe.action_injection_mode = action_mode
-    _install_wan_video_action_call(pipe)
-
-    pipe.model_fn = model_fn_wan_video_action
-    return pipe
 
 
 class WanVideoUnit_NoiseInitializer(PipelineUnit):
@@ -341,109 +422,6 @@ class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
         return {"latents": latents, "input_latents": input_latents}
 
 
-def model_fn_wan_video_action(
-    dit,
-    latents: torch.Tensor = None,
-    timestep: torch.Tensor = None,
-    context: torch.Tensor = None,
-    action_emb: Optional[torch.Tensor] = None,
-    action_mod_emb: Optional[torch.Tensor] = None,
-    clip_feature: Optional[torch.Tensor] = None,
-    y: Optional[torch.Tensor] = None,
-    fuse_vae_embedding_in_latents: bool = False,
-    fused_condition_latent_frames: Optional[int] = None,
-    use_gradient_checkpointing: bool = False,
-    use_gradient_checkpointing_offload: bool = False,
-    **kwargs,
-):
-    if dit.seperated_timestep and fuse_vae_embedding_in_latents:
-        condition_t = 1 if fused_condition_latent_frames is None else int(fused_condition_latent_frames)
-        condition_t = max(0, min(condition_t, latents.shape[2]))
-        spatial_token_count = latents.shape[3] * latents.shape[4] // 4
-        t = torch.concat(
-            [
-                torch.zeros((condition_t, spatial_token_count), dtype=latents.dtype, device=latents.device),
-                torch.ones((latents.shape[2] - condition_t, spatial_token_count), dtype=latents.dtype, device=latents.device) * timestep,
-            ]
-        ).flatten()
-        t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, t).unsqueeze(0))
-    else:
-        t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep))
-
-    text_token_count = 0
-    use_text_embedding = getattr(dit, "use_text_embedding", getattr(dit, "has_text_input", True))
-    has_text_input = getattr(dit, "has_text_input", True)
-
-    if use_text_embedding and context is not None:
-        context = dit.text_embedding(context)
-        text_token_count = context.shape[1]
-    elif not has_text_input:
-        context = None
-    elif not use_text_embedding:
-        context = None
-
-    if context is None:
-        context = action_emb
-    else:
-        context = torch.cat([context, action_emb], dim=1)
-    text_token_count = context.shape[1]
-    num_spatial_tokens = t.shape[1] // action_mod_emb.shape[1]
-    action_mod_emb = action_mod_emb.unsqueeze(2).repeat(1, 1, num_spatial_tokens, 1).flatten(1, 2)
-    t = t + action_mod_emb
-
-    if t.ndim == 3:
-        t_mod = dit.time_projection(t).unflatten(2, (6, dit.dim))
-    else:
-        t_mod = dit.time_projection(t).unflatten(1, (6, dit.dim))
-
-    x = latents
-
-    if y is not None and dit.has_image_input and dit.require_vae_embedding:
-        x = torch.cat([x, y], dim=1)
-
-    if clip_feature is not None and dit.has_image_input and dit.require_clip_embedding:
-        clip_embdding = dit.img_emb(clip_feature)
-        if context is None:
-            context = clip_embdding
-        else:
-            context = torch.cat([clip_embdding, context], dim=1)
-
-    x = dit.patchify(x)
-    f, h, w = x.shape[2:]
-
-    x = rearrange(x, 'b c f h w -> b (f h w) c').contiguous()
-
-    freqs = torch.cat([
-        dit.freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
-        dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
-        dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1),
-    ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
-
-    for block in dit.blocks:
-        if hasattr(block, "cross_attn") and hasattr(block.cross_attn, "text_token_count"):
-            block.cross_attn.text_token_count = text_token_count
-        if use_gradient_checkpointing_offload:
-            with torch.autograd.graph.save_on_cpu():
-                x = torch.utils.checkpoint.checkpoint(
-                    block,
-                    x, context, t_mod, freqs,
-                    use_reentrant=False,
-                )
-        elif use_gradient_checkpointing:
-            x = torch.utils.checkpoint.checkpoint(
-                block,
-                x, context, t_mod, freqs,
-                use_reentrant=False,
-            )
-        else:
-            x = block(x, context, t_mod, freqs)
-
-    x = dit.head(x, t)
-    x = dit.unpatchify(x, (f, h, w))
-
-    return x
-
-
 class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
     """
     Encode the conditioning frame directly into latents for Wan2.2 TI2V.
@@ -457,7 +435,6 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
                 "latents",
                 "noise",
                 "num_history_frames",
-                "use_history_condition_noise_in_inference",
                 "tiled",
                 "tile_size",
                 "tile_stride",
@@ -477,27 +454,25 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
         history_condition_latents: torch.Tensor,
         noise: torch.Tensor,
         history_t: int,
-        use_history_condition_noise_in_inference: bool,
     ):
         if not (
             pipe.action_injection_mode == "adaln"
             and history_t > 1
-            and (pipe.scheduler.training or bool(use_history_condition_noise_in_inference))
         ):
             return history_condition_latents
 
-        training_sigmas, _ = pipe.scheduler.set_timesteps_fn(
-            num_inference_steps=1000,
-            denoising_strength=1.0,
-        )
+        if pipe.scheduler.training:
+            training_sigmas = pipe.scheduler.sigmas
+        else:
+            training_sigmas, _ = pipe.scheduler.set_timesteps_fn(
+                num_inference_steps=1000,
+                denoising_strength=1.0,
+            )
         small_sigma_idx = max(0, len(training_sigmas) - 50)
-        small_sigma = training_sigmas[small_sigma_idx].to(
-            dtype=pipe.torch_dtype,
-            device=pipe.device,
-        )
+        small_sigma = training_sigmas[small_sigma_idx]
         history_condition_latents[:, :, 1:history_t] = (
-            (1 - small_sigma.float()) * history_condition_latents[:, :, 1:history_t].float()
-            + small_sigma.float() * noise[:, :, 1:history_t].float()
+            (1 - small_sigma) * history_condition_latents[:, :, 1:history_t].float()
+            + small_sigma * noise[:, :, 1:history_t].float()
         ).to(dtype=history_condition_latents.dtype)
         return history_condition_latents
 
@@ -510,7 +485,6 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
         latents,
         noise,
         num_history_frames,
-        use_history_condition_noise_in_inference,
         tiled,
         tile_size,
         tile_stride,
@@ -524,11 +498,7 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
             history_t = z.shape[2]
             latents[:, :, :history_t] = z
 
-            z = self._add_history_condition_noise(
-                pipe,
-                z, noise, history_t,
-                use_history_condition_noise_in_inference,
-            )
+            z = self._add_history_condition_noise(pipe, z, noise, history_t)
             return {
                 "latents": latents,
                 "fuse_vae_embedding_in_latents": True,
@@ -562,11 +532,7 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
         history_t = z.shape[2]
         latents[:, :, :history_t] = z
 
-        z = self._add_history_condition_noise(
-            pipe,
-            z, noise, history_t,
-            use_history_condition_noise_in_inference,
-        )
+        z = self._add_history_condition_noise(pipe, z, noise, history_t)
 
         return {
             "latents": latents,

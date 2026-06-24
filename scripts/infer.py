@@ -14,7 +14,7 @@ import torch
 from diffsynth.core import ModelConfig
 from wan_video_action.data import build_infer_dataset
 from wan_video_action.parsers import add_general_config, merge_yaml_and_args, prepare_model_config, resolve_data_keys
-from wan_video_action.pipelines.wan_video_action import build_wan_video_action_pipeline
+from wan_video_action.pipelines.wan_video_action import WanVideoActionPipeline
 from wan_video_action.utils import align_num_frames, resolve_model_path, save_video
 
 
@@ -117,7 +117,6 @@ def _run_autoregressive(
             num_history_frames=int(args.num_history_frames),
             cfg_scale=float(args.cfg_scale),
             num_inference_steps=int(args.num_inference_steps),
-            use_history_condition_noise_in_inference=True,
             progress_bar_cmd=lambda iterable, *args, **kwargs: iterable,
             output_type="floatpoint",
         )
@@ -153,7 +152,7 @@ def build_pipeline(args, model_config):
     dtype = torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    pipe = build_wan_video_action_pipeline(
+    pipe = WanVideoActionPipeline.from_pretrained(
         torch_dtype=dtype,
         device=device,
         model_configs=model_configs,

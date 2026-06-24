@@ -21,7 +21,7 @@ from wan_video_action.data import build_train_dataset
 from wan_video_action.logger import ModelLogger
 from wan_video_action.loss import FlowMatchSFTLossWanAction
 from wan_video_action.parsers import merge_yaml_and_args, prepare_model_config, resolve_data_keys, add_general_config
-from wan_video_action.pipelines.wan_video_action import build_wan_video_action_pipeline
+from wan_video_action.pipelines.wan_video_action import WanVideoActionPipeline
 from wan_video_action.runner import launch_training_task
 from wan_video_action.utils import set_global_seed
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -58,7 +58,7 @@ class WanTrainingModule(DiffusionTrainingModule):
             tokenizer_config = ModelConfig(tokenizer_path)
         else:
             tokenizer_config = None
-        self.pipe = build_wan_video_action_pipeline(
+        self.pipe = WanVideoActionPipeline.from_pretrained(
             torch_dtype=torch.bfloat16,
             device=device,
             model_configs=model_configs,

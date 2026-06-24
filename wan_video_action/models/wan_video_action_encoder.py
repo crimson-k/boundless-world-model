@@ -11,6 +11,11 @@ class WanVideoActionEncoder(nn.Module):
         super().__init__()
         self.action_dim = action_dim
         self.dim = dim
+        self.action_embedding = nn.Sequential(
+            nn.Linear(action_dim, dim),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(dim, dim),
+        )
         self.action_mlp1 = nn.Sequential(
             nn.Linear(action_dim, dim),
             nn.GELU(),
