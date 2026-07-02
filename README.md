@@ -286,7 +286,7 @@ We further thank all project contributors for their valuable discussions, suppor
 - **Infrastructure**:
   - **Distributed Evaluation**: Wenhao Liu
   - **Real-World Setup**: Zhe Li
-- **Discussion Support**: Fengling Li, Pengfei Zhang, Lanyun Zhu, Ying Cheng, Jingkuan Song, Xing Xu, Yunfan Ren, Qi Zhang
+- **Discussion Support**: Fengling Li
 
 ---
 
@@ -294,7 +294,7 @@ We further thank all project contributors for their valuable discussions, suppor
 
 Contributors are listed in alphabetical order by English name.
 
-[Baixu Ji](mailto:baixuji@tongji.edu.cn), [Bowen Wang](mailto:wbw1090809192@gmail.com), [Chen Xu](mailto:1187092474@qq.com), [Chenming Li](mailto:2252661@tongji.edu.cn), [Chenyu Liu](mailto:2431993@tongji.edu.cn), [Enci Xie](mailto:elect@tongji.edu.cn), [Fengling Li](mailto:fenglingli2023@gmail.com), [Hao Xue](mailto:2534205@tongji.edu.cn), [Heng Tao Shen](mailto:shenhengtao@tongji.edu.cn), [Heng Zhi](mailto:2431992@tongji.edu.cn), [Jingkuan Song](mailto:jingkuan.song@gmail.com), [Lanyun Zhu](mailto:zhulanyun1999@gmail.com), [Lei Zhu](mailto:leizhu0608@gmail.com), [Pengfei Zhang](mailto:mima.zpf@gmail.com), [Qi Zhang](mailto:zhangqi_cs@tongji.edu.cn), [Tianshi Wang](mailto:tswang0116@163.com), [Wenhao Liu](mailto:liuwwhh594@gmail.com), [Wenjie Yang](mailto:blankyang@tongji.edu.cn), [Wentao Tan](mailto:tan.wt.lucky@gmail.com), [Xing Xu](mailto:interxuxing@hotmail.com), [Xuebin Fang](mailto:xuebinfang@163.com), [Yang Sun](mailto:young7869264s@gmail.com), [Ying Cheng](mailto:yingcheng@tongji.edu.cn), [Yipeng Chen](mailto:2431994@tongji.edu.cn), [Yunfan Ren](mailto:yunfan@tongji.edu.cn), [Zengrong Lin](mailto:zengronglin@tongji.edu.cn), [Zequn Wang](mailto:wangzequn369@gmail.com), [Zhe Li](mailto:zheli25@tongji.edu.cn)
+[Baixu Ji](mailto:baixuji@tongji.edu.cn), [Bowen Wang](mailto:wbw1090809192@gmail.com), [Chen Xu](mailto:1187092474@qq.com), [Chenming Li](mailto:2252661@tongji.edu.cn), [Chenyu Liu](mailto:2431993@tongji.edu.cn), [Enci Xie](mailto:elect@tongji.edu.cn), [Fengling Li](mailto:fenglingli2023@gmail.com), [Hao Xue](mailto:2534205@tongji.edu.cn), [Heng Tao Shen](mailto:shenhengtao@tongji.edu.cn), [Heng Zhi](mailto:2431992@tongji.edu.cn), [Lei Zhu](mailto:leizhu0608@gmail.com), [Tianshi Wang](mailto:tswang0116@163.com), [Wenhao Liu](mailto:liuwwhh594@gmail.com), [Wenjie Yang](mailto:blankyang@tongji.edu.cn), [Wentao Tan](mailto:tan.wt.lucky@gmail.com), [Xuebin Fang](mailto:xuebinfang@163.com), [Yang Sun](mailto:young7869264s@gmail.com), [Yipeng Chen](mailto:2431994@tongji.edu.cn), [Zengrong Lin](mailto:zengronglin@tongji.edu.cn), [Zequn Wang](mailto:wangzequn369@gmail.com), [Zhe Li](mailto:zheli25@tongji.edu.cn)
 
 ---
 
