@@ -23,7 +23,7 @@ CONFIG_FILE="configs/infer_noise_base.yaml"
 CKPT_OVERRIDE=""  # Leave empty to use default: Ckpt/${TAG}/epoch-${EPOCH}.safetensors
 
 # Optional: metrics, chunk inference
-ENABLE_METRICS=1  # 1=enable, 0=disable
+ENABLE_METRICS=0  # 1=enable, 0=disable
 CHUNK_INFER=0     # 1=enable, 0=disable
 
 # ===========================================
