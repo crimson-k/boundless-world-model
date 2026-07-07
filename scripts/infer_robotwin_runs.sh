@@ -4,6 +4,8 @@ set -euo pipefail
 # Usage:
 #   PREP_ONLY=1 EPISODES=0 scripts/infer_robotwin_runs.sh
 #   scripts/infer_robotwin_runs.sh
+#   scripts/infer_robotwin_runs.sh /data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions
+#   ROBOTWIN_RUN_ROOTS="/data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions" scripts/infer_robotwin_runs.sh
 #   ROBOTWIN_MAX_SAMPLES=1 scripts/infer_robotwin_runs.sh
 #   GPU_IDS=0,1,2 ROBOTWIN_CHUNK_SIZE=13 scripts/infer_robotwin_runs.sh
 #
@@ -44,6 +46,10 @@ PREP_ONLY="${PREP_ONLY:-0}"
 LOG_ROOT="${LOG_ROOT:-${OUTPUT_ROOT}/logs}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 REQUIRE_CUDA="${REQUIRE_CUDA:-1}"
+INFER_ORIGINAL="${INFER_ORIGINAL:-1}"
+INFER_CROPS="${INFER_CROPS:-1}"
+CROP_ROOT_NAME="${CROP_ROOT_NAME:-crop_intervention}"
+ROBOTWIN_RUN_ROOTS="${ROBOTWIN_RUN_ROOTS:-}"
 
 IFS=', ' read -r -a GPU_ID_LIST <<< "${GPU_IDS}"
 if (( ${#GPU_ID_LIST[@]} == 0 )); then
@@ -56,43 +62,101 @@ if (( ROBOTWIN_CHUNK_SIZE <= 0 )); then
 fi
 
 RUN_DIRS=(
-  "/data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions/run_0001"
-  "/data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions/run_0002"
-  "/data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions/run_0003"
-  "/data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions/run_0004"
-  "/data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions/run_0005"
-  "/data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions/run_0006"
-  "/data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions/run_0007"
-  "/data/fangxuebin/RoboTwin/data/dummy_task/multiple_interventions/run_0008"
+  "/data/fangxuebin/RoboTwin/data/adjust_bottle_controlled/multiple_interventions/run_0001"
+  "/data/fangxuebin/RoboTwin/data/beat_block_hammer/multiple_interventions/run_0001"
+  "/data/fangxuebin/RoboTwin/data/click_alarmclock/multiple_interventions/run_0001"
+  "/data/fangxuebin/RoboTwin/data/place_a2b_left/multiple_interventions/run_0001"
+  "/data/fangxuebin/RoboTwin/data/stamp_seal/multiple_interventions/run_0001"
 )
 
 TASK_NAMES=(
-  "dummy_task"
-  "dummy_task"
-  "dummy_task"
-  "dummy_task"
-  "dummy_task"
-  "dummy_task"
-  "dummy_task"
-  "dummy_task"
+  "adjust_bottle_controlled"
+  "beat_block_hammer"
+  "click_alarmclock"
+  "place_a2b_left"
+  "stamp_seal"
 )
 
 RUN_NAMES=(
   "run_0001"
-  "run_0002"
-  "run_0003"
-  "run_0004"
-  "run_0005" 
-  "run_0006" 
-  "run_0007" 
-  "run_0008" 
+  "run_0001"
+  "run_0001"
+  "run_0001"
+  "run_0001" 
 )
+
+add_discovered_run_dir() {
+  local run_dir="$1"
+  local run_name
+  local task_config_dir
+  local task_dir
+  local task_name
+
+  run_dir="$(cd "${run_dir}" && pwd)"
+  run_name="$(basename "${run_dir}")"
+  task_config_dir="$(dirname "${run_dir}")"
+  task_dir="$(dirname "${task_config_dir}")"
+  task_name="$(basename "${task_dir}")"
+
+  RUN_DIRS+=("${run_dir}")
+  TASK_NAMES+=("${task_name}")
+  RUN_NAMES+=("${run_name}")
+}
+
+discover_run_root() {
+  local root="$1"
+  local run_dir
+
+  if [[ ! -d "${root}" ]]; then
+    echo "[discover skip] Missing path: ${root}" >&2
+    return
+  fi
+
+  root="$(cd "${root}" && pwd)"
+  if [[ "$(basename "${root}")" == run_* ]]; then
+    add_discovered_run_dir "${root}"
+    return
+  fi
+
+  while IFS= read -r run_dir; do
+    add_discovered_run_dir "${run_dir}"
+  done < <(find "${root}" -mindepth 1 -maxdepth 1 -type d -name 'run_*' | sort)
+}
+
+DISCOVERY_ROOTS=()
+if (( $# > 0 )); then
+  DISCOVERY_ROOTS+=("$@")
+fi
+if [[ -n "${ROBOTWIN_RUN_ROOTS}" ]]; then
+  # Whitespace-separated list of parent dirs or run dirs.
+  # Use command-line args if paths ever contain spaces.
+  read -r -a env_roots <<< "${ROBOTWIN_RUN_ROOTS}"
+  DISCOVERY_ROOTS+=("${env_roots[@]}")
+fi
+
+if (( ${#DISCOVERY_ROOTS[@]} > 0 )); then
+  RUN_DIRS=()
+  TASK_NAMES=()
+  RUN_NAMES=()
+  for root in "${DISCOVERY_ROOTS[@]}"; do
+    discover_run_root "${root}"
+  done
+fi
+
+if (( ${#RUN_DIRS[@]} == 0 )); then
+  echo "No RUN_DIRS configured or discovered." >&2
+  exit 1
+fi
+if (( ${#RUN_DIRS[@]} != ${#TASK_NAMES[@]} || ${#RUN_DIRS[@]} != ${#RUN_NAMES[@]} )); then
+  echo "RUN_DIRS, TASK_NAMES, and RUN_NAMES must have the same length." >&2
+  exit 1
+fi
 
 prepare_run_metadata() {
   local run_dir="$1"
   local task_name="$2"
-  local run_name="$3"
-  local prepared_dir="${WORK_ROOT}/${task_name}/${run_name}"
+  local metadata_branch="$3"
+  local prepared_dir="${WORK_ROOT}/${task_name}/${metadata_branch}"
 
   mkdir -p "${prepared_dir}"
 
@@ -236,8 +300,8 @@ prepare_todo_metadata() {
   local metadata_path="$1"
   local output_path="$2"
   local task_name="$3"
-  local run_name="$4"
-  local todo_path="${WORK_ROOT}/${task_name}/${run_name}/metadata_todo.jsonl"
+  local metadata_branch="$4"
+  local todo_path="${WORK_ROOT}/${task_name}/${metadata_branch}/metadata_todo.jsonl"
 
   SKIP_EXISTING="${SKIP_EXISTING}" "${PYTHON_BIN}" - "${metadata_path}" "${output_path}" "${todo_path}" <<'PY'
 import json
@@ -276,10 +340,10 @@ PY
 prepare_chunk_metadata() {
   local metadata_path="$1"
   local task_name="$2"
-  local run_name="$3"
+  local metadata_branch="$3"
   local chunk_start="$4"
   local chunk_count="$5"
-  local chunk_path="${WORK_ROOT}/${task_name}/${run_name}/chunks/todo_start${chunk_start}_count${chunk_count}.jsonl"
+  local chunk_path="${WORK_ROOT}/${task_name}/${metadata_branch}/chunks/todo_start${chunk_start}_count${chunk_count}.jsonl"
 
   "${PYTHON_BIN}" - "${metadata_path}" "${chunk_path}" "${chunk_start}" "${chunk_count}" <<'PY'
 import json
@@ -327,6 +391,13 @@ echo "  Chunk size: ${ROBOTWIN_CHUNK_SIZE}"
 echo "  GPU ids: ${GPU_ID_LIST[*]}"
 echo "  Skip existing outputs: ${SKIP_EXISTING}"
 echo "  Require CUDA: ${REQUIRE_CUDA}"
+echo "  Infer original runs: ${INFER_ORIGINAL}"
+echo "  Infer cropped ranges: ${INFER_CROPS}"
+echo "  Crop root name: ${CROP_ROOT_NAME}"
+echo "  Runs configured: ${#RUN_DIRS[@]}"
+for index in "${!RUN_DIRS[@]}"; do
+  echo "    - ${TASK_NAMES[$index]}/${RUN_NAMES[$index]}: ${RUN_DIRS[$index]}"
+done
 echo ""
 
 mkdir -p "${LOG_ROOT}"
@@ -350,14 +421,15 @@ wait_for_one_job() {
 
 launch_job() {
   local task_name="$1"
-  local run_name="$2"
+  local run_label="$2"
   local run_dir="$3"
   local metadata_path="$4"
   local output_path="$5"
   local max_samples="$6"
   local episode_label="$7"
   local gpu_id="${GPU_ID_LIST[$next_gpu_index]}"
-  local log_path="${LOG_ROOT}/${task_name}_${run_name}_episodes${episode_label}_count${max_samples}_gpu${gpu_id}.log"
+  local safe_label="${run_label//\//_}"
+  local log_path="${LOG_ROOT}/${task_name}_${safe_label}_episodes${episode_label}_count${max_samples}_gpu${gpu_id}.log"
 
   next_gpu_index=$(((next_gpu_index + 1) % ${#GPU_ID_LIST[@]}))
 
@@ -375,7 +447,7 @@ launch_job() {
     --max_samples "${max_samples}"
   )
 
-  echo "[job] ${task_name}/${run_name} episodes=${episode_label} count=${max_samples} gpu=${gpu_id}"
+  echo "[job] ${task_name}/${run_label} episodes=${episode_label} count=${max_samples} gpu=${gpu_id}"
   echo "      log=${log_path}"
   printf '      command: CUDA_VISIBLE_DEVICES=%q' "${gpu_id}"
   printf ' %q' "${cmd[@]}"
@@ -408,30 +480,31 @@ PY
   fi
 }
 
-for index in "${!RUN_DIRS[@]}"; do
-  run_dir="${RUN_DIRS[$index]}"
-  task_name="${TASK_NAMES[$index]}"
-  run_name="${RUN_NAMES[$index]}"
-  output_path="${OUTPUT_ROOT}/${task_name}/${run_name}"
+schedule_dataset() {
+  local dataset_dir="$1"
+  local task_name="$2"
+  local run_label="$3"
+  local metadata_branch="$4"
+  local output_path="$5"
 
-  if [[ ! -d "${run_dir}" ]]; then
-    echo "[skip] Missing run dir: ${run_dir}" >&2
-    continue
+  if [[ ! -d "${dataset_dir}" ]]; then
+    echo "[skip] Missing dataset dir: ${dataset_dir}" >&2
+    return
   fi
 
-  metadata_path="$(prepare_run_metadata "${run_dir}" "${task_name}" "${run_name}")"
-  todo_info="$(prepare_todo_metadata "${metadata_path}" "${output_path}" "${task_name}" "${run_name}")"
+  metadata_path="$(prepare_run_metadata "${dataset_dir}" "${task_name}" "${metadata_branch}")"
+  todo_info="$(prepare_todo_metadata "${metadata_path}" "${output_path}" "${task_name}" "${metadata_branch}")"
   IFS=$'\t' read -r todo_metadata_path todo_rows skipped_rows <<< "${todo_info}"
   total_rows="$(wc -l < "${metadata_path}")"
 
   if (( total_rows == 0 )); then
-    echo "[skip] ${task_name}/${run_name}: no readable source episodes"
-    continue
+    echo "[skip] ${task_name}/${run_label}: no readable source episodes"
+    return
   fi
 
   if (( todo_rows == 0 )); then
-    echo "[skip] ${task_name}/${run_name}: all ${total_rows} episode output(s) already exist"
-    continue
+    echo "[skip] ${task_name}/${run_label}: all ${total_rows} episode output(s) already exist"
+    return
   fi
 
   remaining_rows="${todo_rows}"
@@ -439,8 +512,8 @@ for index in "${!RUN_DIRS[@]}"; do
     remaining_rows="${ROBOTWIN_MAX_SAMPLES}"
   fi
 
-  echo "[run] ${task_name}/${run_name}"
-  echo "  Source: ${run_dir}"
+  echo "[run] ${task_name}/${run_label}"
+  echo "  Source: ${dataset_dir}"
   echo "  Metadata: ${metadata_path}"
   echo "  Todo metadata: ${todo_metadata_path}"
   echo "  Output: ${output_path}"
@@ -448,7 +521,7 @@ for index in "${!RUN_DIRS[@]}"; do
   echo "  Samples scheduled: ${remaining_rows}/${todo_rows} todo rows"
 
   if [[ "${PREP_ONLY}" == "1" ]]; then
-    continue
+    return
   fi
 
   chunk_start=0
@@ -459,7 +532,7 @@ for index in "${!RUN_DIRS[@]}"; do
       chunk_count=$((remaining_rows - scheduled))
     fi
 
-    chunk_info="$(prepare_chunk_metadata "${todo_metadata_path}" "${task_name}" "${run_name}" "${chunk_start}" "${chunk_count}")"
+    chunk_info="$(prepare_chunk_metadata "${todo_metadata_path}" "${task_name}" "${metadata_branch}" "${chunk_start}" "${chunk_count}")"
     IFS=$'\t' read -r chunk_metadata_path actual_chunk_count episode_label <<< "${chunk_info}"
     if (( actual_chunk_count == 0 )); then
       break
@@ -467,8 +540,8 @@ for index in "${!RUN_DIRS[@]}"; do
 
     launch_job \
       "${task_name}" \
-      "${run_name}" \
-      "${run_dir}" \
+      "${run_label}" \
+      "${dataset_dir}" \
       "${chunk_metadata_path}" \
       "${output_path}" \
       "${actual_chunk_count}" \
@@ -477,6 +550,49 @@ for index in "${!RUN_DIRS[@]}"; do
     chunk_start=$((chunk_start + chunk_count))
     scheduled=$((scheduled + actual_chunk_count))
   done
+}
+
+for index in "${!RUN_DIRS[@]}"; do
+  run_dir="${RUN_DIRS[$index]}"
+  task_name="${TASK_NAMES[$index]}"
+  run_name="${RUN_NAMES[$index]}"
+
+  if [[ ! -d "${run_dir}" ]]; then
+    echo "[skip] Missing run dir: ${run_dir}" >&2
+    continue
+  fi
+
+  if [[ "${INFER_ORIGINAL}" == "1" ]]; then
+    schedule_dataset \
+      "${run_dir}" \
+      "${task_name}" \
+      "${run_name}" \
+      "${run_name}" \
+      "${OUTPUT_ROOT}/${task_name}/${run_name}"
+  fi
+
+  if [[ "${INFER_CROPS}" == "1" ]]; then
+    crop_root="${run_dir}/${CROP_ROOT_NAME}"
+    if [[ ! -d "${crop_root}" ]]; then
+      echo "[skip] ${task_name}/${run_name}: no ${CROP_ROOT_NAME} directory"
+      continue
+    fi
+
+    while IFS= read -r crop_dir; do
+      range_name="$(basename "${crop_dir}")"
+      if [[ ! -d "${crop_dir}/data" || ! -d "${crop_dir}/video" ]]; then
+        echo "[skip] ${task_name}/${run_name}/${CROP_ROOT_NAME}/${range_name}: missing data/ or video/"
+        continue
+      fi
+
+      schedule_dataset \
+        "${crop_dir}" \
+        "${task_name}" \
+        "${run_name}/${CROP_ROOT_NAME}/${range_name}" \
+        "${run_name}/${CROP_ROOT_NAME}/${range_name}" \
+        "${OUTPUT_ROOT}/${task_name}/${run_name}/${CROP_ROOT_NAME}/${range_name}"
+    done < <(find "${crop_root}" -mindepth 1 -maxdepth 1 -type d | sort)
+  fi
 done
 
 while (( active_jobs > 0 )); do
