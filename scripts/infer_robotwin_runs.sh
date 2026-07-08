@@ -36,7 +36,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/inference_robotwin_runs}"
 WORK_ROOT="${WORK_ROOT:-outputs/inference_robotwin_runs_metadata}"
 ROBOTWIN_MAX_SAMPLES="${ROBOTWIN_MAX_SAMPLES:-0}"
 ROBOTWIN_CHUNK_SIZE="${ROBOTWIN_CHUNK_SIZE:-13}"
-GPU_IDS="${GPU_IDS:-0,1,2,3}"
+GPU_IDS="${GPU_IDS:-1}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 ACTION_TYPE="${ACTION_TYPE:-eef_abs}"
 ROTATION_QUAT_ORDER="${ROTATION_QUAT_ORDER:-xyzw}"
@@ -62,7 +62,7 @@ if (( ROBOTWIN_CHUNK_SIZE <= 0 )); then
 fi
 
 RUN_DIRS=(
-  "/data/fangxuebin/RoboTwin/data/adjust_bottle_controlled/multiple_interventions/run_0001"
+  "/data/fangxuebin/RoboTwin/data/adjust_bottle/multiple_interventions/run_0001"
   "/data/fangxuebin/RoboTwin/data/beat_block_hammer/multiple_interventions/run_0001"
   "/data/fangxuebin/RoboTwin/data/click_alarmclock/multiple_interventions/run_0001"
   "/data/fangxuebin/RoboTwin/data/place_a2b_left/multiple_interventions/run_0001"
@@ -70,7 +70,7 @@ RUN_DIRS=(
 )
 
 TASK_NAMES=(
-  "adjust_bottle_controlled"
+  "adjust_bottle"
   "beat_block_hammer"
   "click_alarmclock"
   "place_a2b_left"
