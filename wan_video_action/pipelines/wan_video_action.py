@@ -413,7 +413,7 @@ class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
             tiled=tiled,
             tile_size=tile_size,
             tile_stride=tile_stride,
-        ).to(dtype=pipe.torch_dtype, device=pipe.device)
+        ).to(dtype=pipe.torch_dtype, device=pipe.device) #  (V,48,21,30,40)
         input_latents = rearrange(input_latents_views, "v c t h w -> 1 c t (v h) w")
 
         if pipe.scheduler.training:

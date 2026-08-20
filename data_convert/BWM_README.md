@@ -224,6 +224,30 @@ For an episode starting at frame zero, the current sampler generates:
 
 The initial frame is repeated to fill the unavailable history.
 
+`robotwin2BWM.py` expands each episode into deterministic temporal windows. With
+the default 81 total frames and 9 history frames, window starts advance by 72
+future frames. If the final stride would leave an uncovered tail, one additional
+full window is aligned to the end of the episode. The MP4 and Parquet files are
+shared by all windows; only manifest rows are duplicated.
+
+For example, a 150-frame episode produces future starts `1`, `73`, and `78`.
+The last window overlaps the previous one but covers frames through `149`
+without padding or repeating the final frame. Use `--window-stride` to select a
+different overlap.
+
+The converter also splits every task by its sorted episode order:
+
+- the first 40 episodes are written to `metadata_train.jsonl`;
+- the last 10 episodes are written to `metadata_test.jsonl`; and
+- `metadata.jsonl` contains the same rows as `metadata_train.jsonl` for
+  compatibility with existing training launch scripts.
+
+Each manifest row includes `split: "train"` or `split: "test"`. `stat.json` is
+computed from training episodes only, so test actions do not leak into the
+normalization bounds. The split sizes can be changed with
+`--train-episodes-per-task` and `--test-episodes-per-task`; a task with too few
+episodes is rejected instead of creating overlapping splits.
+
 `length` or `end_frame` is important. Without either one, the dataset silently treats the sample as a one-frame range. `raw_length` is recommended so future indices can be bounded by the complete underlying episode.
 
 ## Action data
@@ -365,4 +389,3 @@ The diagnosis was validated by:
 - inspecting the converted dataset's metadata, Parquet, video, and statistics schemas;
 - loading the repository demo successfully in raw-video mode; and
 - confirming that the resulting demo sample has video shape `(1, 3, 81, 480, 640)` and action shape `(1, 81, 14)`.
-

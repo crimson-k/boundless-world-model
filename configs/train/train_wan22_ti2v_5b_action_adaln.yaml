@@ -7,7 +7,7 @@ dataset:
   dataset_base_path: ""
   dataset_metadata_path: null
   dataset_repeat: 1
-  dataset_num_workers: 8
+  dataset_num_workers: 1
   data_keys: null
 
 video:
@@ -34,7 +34,7 @@ model:
   modes:
     dit: "default"
     text: "none"
-    vae: "emb" # emb/raw
+    vae: "raw" # emb/raw
     image: "none"
     action: "adaln"
 

@@ -3,7 +3,9 @@
 
 The output contains:
 
-  metadata.jsonl                         BWM sample manifest
+  metadata.jsonl                         BWM training manifest (compatibility name)
+  metadata_train.jsonl                   BWM training manifest
+  metadata_test.jsonl                    BWM test manifest
   stat.json                              14-D EEF normalization statistics
   data/<task>/<subset>/episode_*.parquet Parquets with observation.state
   videos/<task>/<subset>/episode_*.mp4   symlinks to source videos
@@ -30,6 +32,10 @@ DEFAULT_SOURCE = Path("/data1/common_data/RoboTwin2.0_640_480/dataset")
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "converted_dataset_bwm"
 FORMAT_VERSION = b"1"
 STATE_DIM = 14
+DEFAULT_NUM_FRAMES = 81
+DEFAULT_NUM_HISTORY_FRAMES = 9
+DEFAULT_TRAIN_EPISODES_PER_TASK = 40
+DEFAULT_TEST_EPISODES_PER_TASK = 10
 
 
 def episode_index(path: Path) -> int:
@@ -255,6 +261,48 @@ def atomic_write_text(path: Path, text: str) -> None:
     temporary.replace(path)
 
 
+def temporal_window_starts(
+    length: int,
+    num_frames: int,
+    num_history_frames: int,
+    stride: int,
+) -> list[int]:
+    """Return deterministic future starts for full-length training windows."""
+    future_frames = num_frames - num_history_frames
+    last_start = int(length) - future_frames
+    if last_start < 1:
+        return []
+
+    starts = list(range(1, last_start + 1, stride))
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    return starts
+
+
+def split_episodes_by_task(
+    episodes: list[tuple[str, int, Path, Path, Path]],
+    train_count: int,
+    test_count: int,
+) -> dict[str, list[tuple[str, int, Path, Path, Path]]]:
+    """Select the first train_count and last test_count episodes per task."""
+    episodes_by_task = {}
+    for episode in episodes:
+        episodes_by_task.setdefault(episode[0], []).append(episode)
+
+    splits = {"train": [], "test": []}
+    required_count = train_count + test_count
+    for task, task_episodes in episodes_by_task.items():
+        if len(task_episodes) < required_count:
+            raise ValueError(
+                f"Task {task!r} has {len(task_episodes)} episodes, but the requested "
+                f"split requires at least {required_count} ({train_count} train + "
+                f"{test_count} test)."
+            )
+        splits["train"].extend(task_episodes[:train_count])
+        splits["test"].extend(task_episodes[-test_count:])
+    return splits
+
+
 def convert(args: argparse.Namespace) -> None:
     source = args.source.resolve()
     output = args.output.resolve()
@@ -262,17 +310,25 @@ def convert(args: argparse.Namespace) -> None:
     episodes = collect_episodes(source, args.subset, selected_tasks)
     if args.max_episodes is not None:
         episodes = episodes[: args.max_episodes]
+    split_episodes = split_episodes_by_task(
+        episodes,
+        train_count=args.train_episodes_per_task,
+        test_count=args.test_episodes_per_task,
+    )
+    selected_episodes = [
+        (split, episode)
+        for split in ("train", "test")
+        for episode in split_episodes[split]
+    ]
     output.mkdir(parents=True, exist_ok=True)
 
-    records = []
-    states = []
-    for global_index, (
-        task,
-        source_index,
-        hdf5_path,
-        source_video,
-        instruction_path,
-    ) in enumerate(tqdm(episodes, desc="Converting episodes", unit="episode")):
+    records = {"train": [], "test": []}
+    train_states = []
+    skipped_short = {"train": 0, "test": 0}
+    for global_index, (split, episode) in enumerate(
+        tqdm(selected_episodes, desc="Converting episodes", unit="episode")
+    ):
+        task, source_index, hdf5_path, source_video, instruction_path = episode
         state = read_eef_state(hdf5_path)
         prompt = read_prompt(instruction_path)
         parquet_path, video_path = output_paths(
@@ -288,33 +344,61 @@ def convert(args: argparse.Namespace) -> None:
         ensure_video_symlink(source_video, video_path, overwrite=args.overwrite)
 
         length = len(state)
-        records.append(
-            {
-                "episode_index": global_index,
-                "source_episode_index": source_index,
-                "task": task,
-                "prompt": prompt,
-                "video": video_path.relative_to(output).as_posix(),
-                "action": parquet_path.relative_to(output).as_posix(),
-                "start_frame": 0,
-                "end_frame": length - 1,
-                "length": length,
-                "raw_length": length,
-            }
+        window_starts = temporal_window_starts(
+            length,
+            num_frames=args.num_frames,
+            num_history_frames=args.num_history_frames,
+            stride=args.window_stride,
         )
-        states.append(state)
+        if not window_starts:
+            skipped_short[split] += 1
+        for window_index, future_start in enumerate(window_starts):
+            records[split].append(
+                {
+                    "episode_index": global_index,
+                    "source_episode_index": source_index,
+                    "window_index": window_index,
+                    "task": task,
+                    "split": split,
+                    "prompt": prompt,
+                    "video": video_path.relative_to(output).as_posix(),
+                    "action": parquet_path.relative_to(output).as_posix(),
+                    # The dataset sampler interprets start_frame as the first
+                    # future frame and prepends frame 0 plus recent history.
+                    "start_frame": future_start,
+                    "end_frame": length - 1,
+                    "length": length,
+                    "raw_length": length,
+                }
+            )
+        if split == "train":
+            train_states.append(state)
 
-    manifest_text = "".join(
-        json.dumps(record, ensure_ascii=False) + "\n" for record in records
-    )
-    atomic_write_text(output / "metadata.jsonl", manifest_text)
+    manifest_text = {
+        split: "".join(
+            json.dumps(record, ensure_ascii=False) + "\n"
+            for record in records[split]
+        )
+        for split in ("train", "test")
+    }
+    atomic_write_text(output / "metadata_train.jsonl", manifest_text["train"])
+    atomic_write_text(output / "metadata_test.jsonl", manifest_text["test"])
+    # Keep the historical path usable by existing training launch scripts.
+    atomic_write_text(output / "metadata.jsonl", manifest_text["train"])
     atomic_write_text(
         output / "stat.json",
-        json.dumps(action_stats(states), indent=2) + "\n",
+        json.dumps(action_stats(train_states), indent=2) + "\n",
     )
-    print(f"Converted {len(records)} episodes to {output}")
-    print(f"  metadata: {output / 'metadata.jsonl'}")
-    print(f"  stats:    {output / 'stat.json'}")
+    print(f"Converted {len(selected_episodes)} episodes at {output}")
+    for split in ("train", "test"):
+        print(
+            f"  {split}: {len(split_episodes[split])} episodes, "
+            f"{len(records[split])} windows, {output / f'metadata_{split}.jsonl'}"
+        )
+        if skipped_short[split]:
+            print(f"    skipped short episodes: {skipped_short[split]}")
+    print(f"  training alias: {output / 'metadata.jsonl'}")
+    print(f"  train stats:    {output / 'stat.json'}")
     print("  training: set model.modes.vae=raw and action_type=eef_abs")
 
 
@@ -333,7 +417,30 @@ def main() -> None:
     parser.add_argument(
         "--max-episodes",
         type=int,
-        help="Limit the globally sorted episode list, primarily for validation.",
+        help="Limit the globally sorted source list before splitting, primarily for validation.",
+    )
+    parser.add_argument(
+        "--train-episodes-per-task",
+        type=int,
+        default=DEFAULT_TRAIN_EPISODES_PER_TASK,
+        help="Take this many leading episodes from each task for training.",
+    )
+    parser.add_argument(
+        "--test-episodes-per-task",
+        type=int,
+        default=DEFAULT_TEST_EPISODES_PER_TASK,
+        help="Take this many trailing episodes from each task for testing.",
+    )
+    parser.add_argument("--num-frames", type=int, default=DEFAULT_NUM_FRAMES)
+    parser.add_argument(
+        "--num-history-frames",
+        type=int,
+        default=DEFAULT_NUM_HISTORY_FRAMES,
+    )
+    parser.add_argument(
+        "--window-stride",
+        type=int,
+        help="Future-frame stride between windows; defaults to num_frames - num_history_frames.",
     )
     parser.add_argument(
         "--overwrite",
@@ -343,6 +450,18 @@ def main() -> None:
     args = parser.parse_args()
     if args.max_episodes is not None and args.max_episodes <= 0:
         parser.error("--max-episodes must be positive")
+    if args.train_episodes_per_task <= 0:
+        parser.error("--train-episodes-per-task must be positive")
+    if args.test_episodes_per_task <= 0:
+        parser.error("--test-episodes-per-task must be positive")
+    if not 1 <= args.num_history_frames < args.num_frames:
+        parser.error("require 1 <= --num-history-frames < --num-frames")
+    if (args.num_history_frames - 1) % 4 != 0:
+        parser.error("--num-history-frames - 1 must be divisible by 4")
+    if args.window_stride is None:
+        args.window_stride = args.num_frames - args.num_history_frames
+    if args.window_stride <= 0:
+        parser.error("--window-stride must be positive")
     convert(args)
 
 

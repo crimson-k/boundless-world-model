@@ -49,3 +49,10 @@ AGENTS.md
 !demo/**
 
 converted_dataset*/
+
+notes/
+
+src/
+
+*.log
+.codex/

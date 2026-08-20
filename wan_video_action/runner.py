@@ -40,7 +40,7 @@ def launch_training_task(
     }
     if args.dataset_num_workers > 0:
         dataloader_kwargs["persistent_workers"] = True
-        dataloader_kwargs["prefetch_factor"] = 16
+        dataloader_kwargs["prefetch_factor"] = 1
     dataloader = torch.utils.data.DataLoader(dataset, **dataloader_kwargs)
 
     training_logger = TrainingLogger(accelerator, args.output_path, args=args)
