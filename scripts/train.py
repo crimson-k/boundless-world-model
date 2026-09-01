@@ -195,6 +195,8 @@ if __name__ == "__main__":
     print("[resolved_config] resolved_model_paths:", model_config["model_paths_list"])
     print("[resolved_config] model.weights:", args.weights)
     print("[resolved_config] dataset.data_keys:", args.data_keys)
+    print("[resolved_config] train_metadata_path:", args.dataset_metadata_path)
+    print("[resolved_config] val_metadata_path:", args.val_dataset_metadata_path)
     print("[resolved_config] training.trainable:", args.trainable)
     print("[resolved_config] model.modes:", args.modes)
     print("[resolved_config] dit_mode:", args.modes["dit"])
@@ -218,7 +220,10 @@ if __name__ == "__main__":
         kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=args.find_unused_parameters)],
     )
 
-    dataset = build_train_dataset(args)
+    train_dataset = build_train_dataset(args)
+    val_dataset = None
+    if args.val_dataset_metadata_path and not args.task.endswith(":data_process"):
+        val_dataset = build_train_dataset(args, metadata_path=args.val_dataset_metadata_path, repeat=1)
 
     model = WanTrainingModule(
         model_paths=json.dumps(model_config["model_paths_list"]),
@@ -259,4 +264,8 @@ if __name__ == "__main__":
         "direct_distill": launch_training_task,
         "direct_distill:train": launch_training_task,
     }
-    launcher_map[args.task](accelerator, dataset, model, model_logger, args=args)
+    launcher = launcher_map[args.task]
+    if args.task.endswith(":data_process"):
+        launcher(accelerator, train_dataset, model, model_logger, args=args)
+    else:
+        launcher(accelerator, train_dataset, val_dataset, model, model_logger, args=args)

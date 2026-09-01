@@ -176,7 +176,7 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         return wrap_item(payload)
 
 
-def build_robotwin_train_dataset(args) -> RoboTwinUnifiedDataset:
+def build_robotwin_train_dataset(args, metadata_path=None, repeat=None) -> RoboTwinUnifiedDataset:
     keys = tuple(args.data_keys)
 
     special_operator_map = {}
@@ -199,8 +199,8 @@ def build_robotwin_train_dataset(args) -> RoboTwinUnifiedDataset:
 
     return RoboTwinUnifiedDataset(
         base_path=args.dataset_base_path,
-        metadata_path=args.dataset_metadata_path,
-        repeat=args.dataset_repeat,
+        metadata_path=metadata_path or args.dataset_metadata_path,
+        repeat=args.dataset_repeat if repeat is None else repeat,
         data_file_keys=tuple(keys),
         main_data_operator=create_video_operator(
             base_path=args.dataset_base_path,
@@ -265,8 +265,8 @@ INFER_DATASET_BUILDERS = {
 }
 
 
-def build_train_dataset(args) -> RoboTwinUnifiedDataset:
-    return TRAIN_DATASET_BUILDERS[args.dataset_name](args)
+def build_train_dataset(args, metadata_path=None, repeat=None) -> RoboTwinUnifiedDataset:
+    return TRAIN_DATASET_BUILDERS[args.dataset_name](args, metadata_path=metadata_path, repeat=repeat)
 
 
 def build_infer_dataset(args) -> RoboTwinUnifiedDataset:

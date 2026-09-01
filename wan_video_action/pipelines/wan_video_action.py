@@ -186,13 +186,13 @@ def model_fn_wan_video_action(
     if dit.seperated_timestep and fuse_vae_embedding_in_latents:
         condition_t = 1 if fused_condition_latent_frames is None else int(fused_condition_latent_frames)
         condition_t = max(0, min(condition_t, latents.shape[2]))
-        spatial_token_count = latents.shape[3] * latents.shape[4] // 4
+        spatial_token_count = latents.shape[3] * latents.shape[4] // 4    # (2, 2)  ; 30 × 40 / 4 = 300 
         t = torch.concat(
             [
                 torch.zeros((condition_t, spatial_token_count), dtype=latents.dtype, device=latents.device),
                 torch.ones((latents.shape[2] - condition_t, spatial_token_count), dtype=latents.dtype, device=latents.device) * timestep,
             ]
-        ).flatten()
+        ).flatten() #21*300=6300 ; (1, 6300, 3072)
         t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, t).unsqueeze(0))
     else:
         t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep))
@@ -210,18 +210,19 @@ def model_fn_wan_video_action(
         context = None
 
     if context is None:
-        context = action_emb
+        context = action_emb #(1, 81, 3072)
     else:
         context = torch.cat([context, action_emb], dim=1)
     text_token_count = context.shape[1]
     num_spatial_tokens = t.shape[1] // action_mod_emb.shape[1]
-    action_mod_emb = action_mod_emb.unsqueeze(2).repeat(1, 1, num_spatial_tokens, 1).flatten(1, 2)
+    action_mod_emb = action_mod_emb.unsqueeze(2).repeat(1, 1, num_spatial_tokens, 1).flatten(1, 2) #(1,21,3072) -> (1,21,300,3072) -> (1,6300,3072)
     t = t + action_mod_emb
 
     if t.ndim == 3:
         t_mod = dit.time_projection(t).unflatten(2, (6, dit.dim))
     else:
-        t_mod = dit.time_projection(t).unflatten(1, (6, dit.dim))
+        t_mod = dit.time_projection(t).unflatten(1, (6, dit.dim)) 
+    # t_mod (1,6300,6,3072) , 6 groups of 3072-dim embedding for: shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
     x = latents
 
@@ -235,7 +236,7 @@ def model_fn_wan_video_action(
         else:
             context = torch.cat([clip_embdding, context], dim=1)
 
-    x = dit.patchify(x)
+    x = dit.patchify(x) # (1,48,21,30,40) -> Conv3D，空间每2×2组成一个patch -> (1,3072,21,15,20) -> flatten -> (1,6300,3072)
     f, h, w = x.shape[2:]
 
     x = rearrange(x, 'b c f h w -> b (f h w) c').contiguous()
@@ -266,7 +267,7 @@ def model_fn_wan_video_action(
             x = block(x, context, t_mod, freqs)
 
     x = dit.head(x, t)
-    x = dit.unpatchify(x, (f, h, w))
+    x = dit.unpatchify(x, (f, h, w)) #  (1,6300,3072) → (1,6300,192) → (1,48,21,30,40)
 
     return x
 

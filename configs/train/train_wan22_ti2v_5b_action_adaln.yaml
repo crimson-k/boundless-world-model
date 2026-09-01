@@ -6,6 +6,7 @@ dataset:
   dataset_name: "robotwin"
   dataset_base_path: ""
   dataset_metadata_path: null
+  val_dataset_metadata_path: null
   dataset_repeat: 1
   dataset_num_workers: 1
   data_keys: null

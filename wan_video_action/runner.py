@@ -15,7 +15,8 @@ from wan_video_action.logger import TrainingLogger
 
 def launch_training_task(
     accelerator,
-    dataset,
+    train_dataset,
+    val_dataset,
     model,
     model_logger,
     args,
@@ -41,13 +42,23 @@ def launch_training_task(
     if args.dataset_num_workers > 0:
         dataloader_kwargs["persistent_workers"] = True
         dataloader_kwargs["prefetch_factor"] = 1
-    dataloader = torch.utils.data.DataLoader(dataset, **dataloader_kwargs)
+    train_dataloader = torch.utils.data.DataLoader(train_dataset, **dataloader_kwargs)
+    val_dataloader = None
+    if val_dataset is not None:
+        val_dataloader = torch.utils.data.DataLoader(val_dataset, **dataloader_kwargs)
 
     training_logger = TrainingLogger(accelerator, args.output_path, args=args)
     training_logger.init_trackers()
     accelerator.register_for_checkpointing(model_logger)
 
-    model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
+    if val_dataloader is None:
+        model, optimizer, train_dataloader, scheduler = accelerator.prepare(
+            model, optimizer, train_dataloader, scheduler
+        )
+    else:
+        model, optimizer, train_dataloader, val_dataloader, scheduler = accelerator.prepare(
+            model, optimizer, train_dataloader, val_dataloader, scheduler
+        )
     initialize_deepspeed_gradient_checkpointing(accelerator)
 
     start_epoch = 0
@@ -74,7 +85,7 @@ def launch_training_task(
         optimizer.zero_grad()
         epoch_label = (epoch_id + 1) * args.dataset_repeat - 1
 
-        epoch_dataloader = skip_first_batches(dataloader, skip_batches) if skip_batches else dataloader
+        epoch_dataloader = skip_first_batches(train_dataloader, skip_batches) if skip_batches else train_dataloader
         progress_bar = tqdm(epoch_dataloader, disable=not accelerator.is_local_main_process)
         for local_batch_idx, data in enumerate(progress_bar):
             batch_idx = skip_batches + local_batch_idx
@@ -86,7 +97,7 @@ def launch_training_task(
                     torch.cuda.set_rng_state_all(resume_rng_state["cuda"])
                 resume_rng_restored = True
             with accelerator.accumulate(model):
-                if getattr(dataset, "load_from_cache", False):
+                if getattr(train_dataset, "load_from_cache", False):
                     loss = model({}, inputs=data)
                 else:
                     loss = model(data)
@@ -146,6 +157,15 @@ def launch_training_task(
                     postfix[eta_label] = str(datetime.timedelta(seconds=max(0, int(step_time * eta_steps))))
                     training_logger.update_progress_bar(progress_bar, postfix)
 
+                    should_validate = val_dataloader is not None and (
+                        model_logger.num_steps % args.save_steps == 0
+                        or model_logger.num_steps >= args.max_train_steps
+                    )
+                    if should_validate:
+                        val_loss = validate(model, val_dataloader, val_dataset, accelerator)
+                        training_logger.log_validation(val_loss, step=model_logger.num_steps)
+                        accelerator.print(f"Validation loss at step {model_logger.num_steps}: {val_loss:.6f}")
+
                     if model_logger.num_steps >= args.max_train_steps:
                         break
         skip_batches = 0
@@ -154,3 +174,27 @@ def launch_training_task(
     training_logger.close()
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
+
+
+@torch.no_grad()
+def validate(model, dataloader, dataset, accelerator):
+    training_states = [(module, module.training) for module in model.modules()]
+    torch_rng_state = torch.get_rng_state()
+    cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+    model.eval()
+    loss_sum = 0.0
+    loss_count = 0
+    for data in tqdm(dataloader, desc="Validation", disable=not accelerator.is_local_main_process):
+        if getattr(dataset, "load_from_cache", False):
+            loss = model({}, inputs=data)
+        else:
+            loss = model(data)
+        losses = accelerator.gather_for_metrics(loss.detach().float().reshape(1))
+        loss_sum += losses.sum().item()
+        loss_count += losses.numel()
+    for module, training in training_states:
+        module.training = training
+    torch.set_rng_state(torch_rng_state)
+    if cuda_rng_state is not None:
+        torch.cuda.set_rng_state(cuda_rng_state)
+    return loss_sum / loss_count

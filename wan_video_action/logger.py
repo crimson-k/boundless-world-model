@@ -62,6 +62,13 @@ class TrainingLogger:
             }
             self.accelerator.log(remote_metrics, step=step)
 
+    def log_validation(self, val_loss, step):
+        metrics = {"step": step, "val/loss": val_loss}
+        self.metric_log_file.write(json.dumps(metrics, sort_keys=True) + "\n")
+        self.metric_log_file.flush()
+        if self.tracker_names:
+            self.accelerator.log({"val/loss": val_loss}, step=step)
+
     def update_progress_bar(self, progress_bar, postfix):
         progress_bar.set_postfix(postfix)
 
