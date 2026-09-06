@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export TOKENIZERS_PARALLELISM="false"
 
@@ -16,18 +16,21 @@ TRAIN_METADATA_PATH="${TRAIN_METADATA_PATH:-${DATASET_DIR}/metadata_train.jsonl}
 VAL_METADATA_PATH="${VAL_METADATA_PATH:-${DATASET_DIR}/metadata_test.jsonl}"
 ACTION_STAT_PATH="${ACTION_STAT_PATH:-/data1/fangxuebin/boundless-world-model/converted_dataset_task1/stat.json}"
 CONFIG_PATH="${CONFIG_PATH:-configs/train/train_wan22_ti2v_5b_action_adaln.yaml}"
-ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/train/accelerate_multi_gpu.yaml}"
+ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/train/accelerate_fsdp_multi_gpu.yaml}"
 MACHINE_RANK="${MACHINE_RANK:-}"
 DATASET_NUM_WORKERS="${DATASET_NUM_WORKERS:-1}"
-MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-10000}"
+MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-1000}"
 SAVE_STEPS="${SAVE_STEPS:-1000}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-16}"
 DETERMINISTIC="${DETERMINISTIC:-0}"
 USE_WANDB="${USE_WANDB:-0}"
 USE_SWANLAB="${USE_SWANLAB:-0}"
-RUN_NAME="${RUN_NAME:-}"
+RUN_NAME="${RUN_NAME:-train_wan22_ti2v_5b_action_adaln_pefm_soft_w1}"
 RESUME_FROM="${RESUME_FROM:-}"
-OUTPUT_PATH="${OUTPUT_PATH:-}"
+OUTPUT_PATH="${OUTPUT_PATH:-outputs/training/train_wan22_ti2v_5b_action_adaln_pefm_soft_w1}"
+EVALUATOR_PATH="${EVALUATOR_PATH:-}"
+EVALUATOR_LOSS_WEIGHT="${EVALUATOR_LOSS_WEIGHT:-0.5}"
+LOG_PATH="${LOG_PATH:-outputs/training/train_wan22_ti2v_5b_action_adaln_pefm_soft_w1/train.log}"
 
 LAUNCH_CMD=(
   "${PYTHON_BIN}" -m accelerate.commands.launch
@@ -50,8 +53,13 @@ TRAIN_CMD=(
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}"
   --max_train_steps "${MAX_TRAIN_STEPS}"
   --save_steps "${SAVE_STEPS}"
+  --evaluator_loss_weight "${EVALUATOR_LOSS_WEIGHT}"
   --use_gradient_checkpointing
 )
+
+if [ -n "${EVALUATOR_PATH}" ]; then
+  TRAIN_CMD+=(--evaluator_path "${EVALUATOR_PATH}")
+fi
 
 if [ "${DETERMINISTIC}" = "1" ]; then
   TRAIN_CMD+=(--deterministic)
@@ -77,4 +85,4 @@ if [ -n "${RESUME_FROM}" ]; then
   TRAIN_CMD+=(--resume_from "${RESUME_FROM}")
 fi
 
-"${LAUNCH_CMD[@]}" "${TRAIN_CMD[@]}" 2>&1 | tee -a pretrained_sft_task1.log
+"${LAUNCH_CMD[@]}" "${TRAIN_CMD[@]}" 2>&1 | tee -a "${LOG_PATH}"

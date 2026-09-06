@@ -65,10 +65,13 @@ def FlowMatchSFTLossWanAction(pipe, **inputs):
     generated_video = decode_clean_video(
         pipe, history_latents, pred_clean_latents, num_views=num_views
     )
-    with torch.no_grad():
-        expert_video = decode_clean_video(
-            pipe, history_latents, expert_future_latents, num_views=num_views
-        )
+    if input_video is not None:
+        expert_video = input_video.unsqueeze(0).to(generated_video)
+    else:
+        with torch.no_grad():
+            expert_video = decode_clean_video(
+                pipe, history_latents, expert_future_latents, num_views=num_views
+            )
     interaction_loss = prior_feature_matching_loss(
         evaluator=evaluator,
         generated_video=generated_video,

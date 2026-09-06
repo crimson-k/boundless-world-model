@@ -6,6 +6,7 @@ from pathlib import Path
 
 import accelerate
 import torch
+from accelerate.utils import DistributedType
 from diffsynth.core import ModelConfig
 from diffsynth.diffusion import (
     DiffusionTrainingModule,
@@ -18,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from wan_video_action.data import build_train_dataset
+from wan_video_action.evaluator_loss import initialize_frozen_evaluator
 from wan_video_action.logger import ModelLogger
 from wan_video_action.loss import FlowMatchSFTLossWanAction
 from wan_video_action.parsers import merge_yaml_and_args, prepare_model_config, resolve_data_keys, add_general_config
@@ -75,6 +77,12 @@ class WanTrainingModule(DiffusionTrainingModule):
             preset_lora_path, preset_lora_model,
             task=task,
         )
+        initialize_frozen_evaluator(
+            self.pipe,
+            args.evaluator_path,
+            args.evaluator_loss_weight,
+        )
+        self._original_trainable_param_names = super().trainable_param_names()
 
         # Store other configs
         self.use_gradient_checkpointing = use_gradient_checkpointing
@@ -94,6 +102,10 @@ class WanTrainingModule(DiffusionTrainingModule):
         self.num_history_frames = num_history_frames
         self.history_template_sampling = int(history_template_sampling)
         self.use_precomputed_latents = args.modes["vae"] == "emb"
+
+    def trainable_param_names(self):
+        names = getattr(self, "_original_trainable_param_names", None)
+        return names if names is not None else super().trainable_param_names()
 
     def parse_extra_inputs(self, data, extra_inputs, inputs_shared):
         for extra_input in extra_inputs:
@@ -212,9 +224,16 @@ if __name__ == "__main__":
     print("[resolved_config] spatial_division_factor:", args.spatial_division_factor)
     print("[resolved_config] max_train_steps:", args.max_train_steps)
     print("[resolved_config] deterministic:", args.deterministic)
+    print("[resolved_config] evaluator_path:", args.evaluator_path)
+    print("[resolved_config] evaluator_loss_weight:", args.evaluator_loss_weight)
     loggers = [name for name in ("wandb", "swanlab") if getattr(args, f"use_{name}", False)]
+    use_fsdp = os.environ.get("ACCELERATE_USE_FSDP", "false").lower() == "true"
+    accumulation_plugin = accelerate.utils.GradientAccumulationPlugin(
+        num_steps=args.gradient_accumulation_steps,
+        sync_each_batch=use_fsdp,
+    )
     accelerator = accelerate.Accelerator(
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        gradient_accumulation_plugin=accumulation_plugin,
         mixed_precision=args.mixed_precision,
         log_with=loggers or None,
         kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=args.find_unused_parameters)],
@@ -251,6 +270,8 @@ if __name__ == "__main__":
         action_mode=args.modes["action"],
         args=args,
     )
+    if accelerator.distributed_type == DistributedType.FSDP:
+        accelerator.state.fsdp_plugin.ignored_modules = [model.pipe.vae]
 
     model_logger = ModelLogger(
         args.output_path,

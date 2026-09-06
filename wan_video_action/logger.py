@@ -135,10 +135,15 @@ class ModelLogger(DiffSynthModelLogger):
         accelerator.wait_for_everyone()
         state_dict = accelerator.get_state_dict(model)
         if accelerator.is_main_process:
-            state_dict = accelerator.unwrap_model(model).export_trainable_state_dict(
+            unwrapped_model = accelerator.unwrap_model(model)
+            state_dict = unwrapped_model.export_trainable_state_dict(
                 state_dict,
                 remove_prefix=self.remove_prefix_in_ckpt,
             )
+            state_dict = {
+                name: value.to(unwrapped_model.pipe.torch_dtype)
+                for name, value in state_dict.items()
+            }
             state_dict = self.state_dict_converter(state_dict)
             os.makedirs(self.output_path, exist_ok=True)
             path = os.path.join(self.output_path, file_name)

@@ -77,6 +77,10 @@ gradient:
   gradient_accumulation_steps: 16
   max_grad_norm: 0.5
 
+evaluator:
+  evaluator_path: "/data1/fangxuebin/pefm/outputs/evaluator/epoch_100/frozen_evaluator_epoch_0100.pt"
+  evaluator_loss_weight: 0.5
+
 tracking:
   use_wandb: false
   use_swanlab: false

@@ -1,13 +1,73 @@
 import torch
 from einops import rearrange
+from pefm import load_frozen_evaluator
+from torch.utils.checkpoint import checkpoint
 
 
 def attach_frozen_evaluator(pipe, evaluator, loss_weight):
     evaluator.to(pipe.device)
     evaluator.requires_grad_(False)
     evaluator.eval()
-    pipe.evaluator = evaluator
+    object.__setattr__(pipe, "evaluator", evaluator)
     pipe.evaluator_loss_weight = float(loss_weight)
+
+
+def initialize_frozen_evaluator(pipe, evaluator_path, loss_weight):
+    pipe.evaluator_loss_weight = float(loss_weight)
+    if pipe.evaluator_loss_weight == 0:
+        return
+    if not evaluator_path:
+        raise ValueError("evaluator_path is required when evaluator_loss_weight is nonzero.")
+
+    evaluator = load_frozen_evaluator(
+        bundle_path=evaluator_path,
+        device=pipe.device,
+        dtype=pipe.torch_dtype,
+    )
+    attach_frozen_evaluator(pipe, evaluator, pipe.evaluator_loss_weight)
+
+
+def _decode_checkpointed(pipe, latents):
+    if not latents.requires_grad:
+        return pipe.vae.single_decode(latents, pipe.device)
+
+    model = pipe.vae.model
+    scale = [value.to(latents) for value in pipe.vae.scale]
+    latents = latents / scale[1].view(1, model.z_dim, 1, 1, 1)
+    latents = latents + scale[0].view(1, model.z_dim, 1, 1, 1)
+    hidden = model.conv2(latents)
+    model.clear_cache()
+    cache = tuple(model._feat_map)
+    frames = []
+
+    for index in range(hidden.shape[2]):
+        first_chunk = index == 0
+
+        def decode_step(frame, cached, first_chunk=first_chunk):
+            cached = list(cached)
+            output, cached, _ = model.decoder(
+                frame,
+                feat_cache=cached,
+                feat_idx=[0],
+                first_chunk=first_chunk,
+            )
+            return output, tuple(cached)
+
+        frame, cache = checkpoint(
+            decode_step,
+            hidden[:, :, index : index + 1],
+            cache,
+            use_reentrant=False,
+        )
+        frames.append(frame)
+
+    video = rearrange(
+        torch.cat(frames, dim=2),
+        "b (c r q) t h w -> b c t (h q) (w r)",
+        q=2,
+        r=2,
+    )
+    return video.clamp(-1, 1)
 
 
 def decode_clean_video(pipe, history_latents, future_latents, num_views):
@@ -25,7 +85,7 @@ def decode_clean_video(pipe, history_latents, future_latents, num_views):
         "b c t (v h) w -> (b v) c t h w",
         v=num_views,
     ).to(dtype=pipe.torch_dtype)
-    video = pipe.vae.decode(latents_by_view, device=pipe.device)
+    video = torch.cat([_decode_checkpointed(pipe, latents[None]) for latents in latents_by_view])
     return rearrange(
         video,
         "(b v) c t h w -> b v c t h w",
@@ -49,7 +109,8 @@ def prior_feature_matching_loss(
     num_history_frames,
 ):
     """Return generated/expert prior features and their future-only MSE loss."""
-    eef = eef.to(dtype=next(evaluator.parameters()).dtype)
+    parameter = next(evaluator.parameters())
+    eef = torch.as_tensor(eef, device=generated_video.device, dtype=parameter.dtype)
     num_frames = generated_video.shape[3]
     if (num_frames - 1) % 4:
         raise ValueError(f"Expected 1+4k frames, got {num_frames}.")
@@ -71,22 +132,15 @@ def prior_feature_matching_loss(
         "reset": reset,
     }
 
-    cpu_rng_state = torch.get_rng_state()
-    cuda_rng_state = (
-        torch.cuda.get_rng_state(generated_video.device) if generated_video.is_cuda else None
-    )
     evaluator.eval()
-    generated_prior = evaluator({**shared, "rgb": generated_video})["prior_prediction"]
+    generated_prior = checkpoint(
+        lambda rgb: evaluator({**shared, "rgb": rgb})["prior_prediction"],
+        generated_video,
+        use_reentrant=True,
+    )
 
-    torch.set_rng_state(cpu_rng_state)
-    if cuda_rng_state is not None:
-        torch.cuda.set_rng_state(cuda_rng_state, generated_video.device)
     with torch.no_grad():
         expert_prior = evaluator({**shared, "rgb": expert_video})["prior_prediction"]
-
-    torch.set_rng_state(cpu_rng_state)
-    if cuda_rng_state is not None:
-        torch.cuda.set_rng_state(cuda_rng_state, generated_video.device)
 
     history_groups = 1 + (int(num_history_frames) - 1) // 4
     error = (generated_prior - expert_prior).square().mean(-1)
