@@ -20,6 +20,7 @@ def launch_training_task(
     model,
     model_logger,
     args,
+    graceful_exit=None,
 ):
     os.makedirs(args.output_path, exist_ok=True)
 
@@ -64,7 +65,7 @@ def launch_training_task(
     start_epoch = 0
     if args.resume_from:
         accelerator.print(f"Resuming training from full state: {args.resume_from}")
-        accelerator.load_state(args.resume_from)
+        model_logger.load_training_state(accelerator, args.resume_from)
         start_epoch = model_logger.epoch_id
 
     epoch_id = start_epoch
@@ -79,6 +80,8 @@ def launch_training_task(
         }
     resume_rng_restored = False
     last_step_time = time.monotonic()
+    interrupted = False
+    interruption_split = None
     while model_logger.num_steps < args.max_train_steps:
         train_loss = 0.0
         loss_count = 0
@@ -89,6 +92,7 @@ def launch_training_task(
         progress_bar = tqdm(epoch_dataloader, disable=not accelerator.is_local_main_process)
         for local_batch_idx, data in enumerate(progress_bar):
             batch_idx = skip_batches + local_batch_idx
+            completed_update = False
             if resume_rng_state is not None and not resume_rng_restored:
                 random.setstate(resume_rng_state["python"])
                 np.random.set_state(resume_rng_state["numpy"])
@@ -111,6 +115,7 @@ def launch_training_task(
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
+                    completed_update = True
 
                     now = time.monotonic()
                     step_time = now - last_step_time
@@ -162,29 +167,54 @@ def launch_training_task(
                         or model_logger.num_steps >= args.max_train_steps
                     )
                     if should_validate:
-                        val_loss = validate(model, val_dataloader, val_dataset, accelerator)
-                        training_logger.log_validation(val_loss, step=model_logger.num_steps)
-                        accelerator.print(f"Validation loss at step {model_logger.num_steps}: {val_loss:.6f}")
+                        val_loss, interrupted = validate(
+                            model,
+                            val_dataloader,
+                            val_dataset,
+                            accelerator,
+                            graceful_exit=graceful_exit,
+                        )
+                        if interrupted:
+                            interruption_split = "validation"
+                        if not interrupted:
+                            training_logger.log_validation(val_loss, step=model_logger.num_steps)
+                            accelerator.print(f"Validation loss at step {model_logger.num_steps}: {val_loss:.6f}")
 
-                    if model_logger.num_steps >= args.max_train_steps:
-                        break
+            if graceful_exit is not None and not interrupted:
+                graceful_exit.batch = batch_idx + 1
+                interrupted = graceful_exit.sync()
+                if interrupted:
+                    interruption_split = "train"
+            if interrupted and completed_update:
+                if interruption_split == "train":
+                    graceful_exit.batch = batch_idx + 1
+                graceful_exit.save(model_logger, split=interruption_split)
+                break
+            if model_logger.num_steps >= args.max_train_steps:
+                break
+        if interrupted:
+            break
         skip_batches = 0
         epoch_id += 1
-    model_logger.on_training_end(accelerator, model, args.save_steps)
+    if not interrupted:
+        model_logger.on_training_end(accelerator, model, args.save_steps)
     training_logger.close()
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
 
 
 @torch.no_grad()
-def validate(model, dataloader, dataset, accelerator):
+def validate(model, dataloader, dataset, accelerator, graceful_exit=None):
     training_states = [(module, module.training) for module in model.modules()]
     torch_rng_state = torch.get_rng_state()
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
     model.eval()
     loss_sum = 0.0
     loss_count = 0
-    for data in tqdm(dataloader, desc="Validation", disable=not accelerator.is_local_main_process):
+    interrupted = False
+    for batch_idx, data in enumerate(
+        tqdm(dataloader, desc="Validation", disable=not accelerator.is_local_main_process)
+    ):
         if getattr(dataset, "load_from_cache", False):
             loss = model({}, inputs=data)
         else:
@@ -192,9 +222,14 @@ def validate(model, dataloader, dataset, accelerator):
         losses = accelerator.gather_for_metrics(loss.detach().float().reshape(1))
         loss_sum += losses.sum().item()
         loss_count += losses.numel()
+        if graceful_exit is not None:
+            graceful_exit.batch = batch_idx + 1
+            interrupted = graceful_exit.sync()
+            if interrupted:
+                break
     for module, training in training_states:
         module.training = training
     torch.set_rng_state(torch_rng_state)
     if cuda_rng_state is not None:
         torch.cuda.set_rng_state(cuda_rng_state)
-    return loss_sum / loss_count
+    return loss_sum / loss_count, interrupted

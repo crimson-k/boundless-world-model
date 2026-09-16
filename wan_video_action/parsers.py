@@ -158,7 +158,7 @@ def add_output_config(parser: argparse.ArgumentParser):
     group.add_argument("--output_path", type=str, default="./models", help="[KEY] Output save path.")
     group.add_argument("--remove_prefix_in_ckpt", type=str, default="pipe.dit.", help='[OPTIONAL] Remove prefix in ckpt. (default: "pipe.dit.")')
     group.add_argument("--save_steps", type=int, default=None, help="[KEY] Optimizer-step interval for checkpoint saving.")
-    group.add_argument("--resume_from", type=str, default=None, help="[OPTIONAL] Path to a full training state directory saved by accelerator (e.g., output_path/states/latest).")
+    group.add_argument("--resume_from", type=str, default=None, help="[OPTIONAL] Path to a full training state directory saved by accelerator (e.g., output_path/states/step-1000).")
     return parser
 
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export TOKENIZERS_PARALLELISM="false"
 
@@ -11,7 +11,7 @@ fi
 
 PYTHON_BIN="${PYTHON_BIN:-/home/fangxuebin/.conda/envs/BWM/bin/python}"
 MODEL_DIR="${MODEL_DIR:-/data1/common_model/modelscope/Wan-AI/Wan2.2-TI2V-5B/}"
-DATASET_DIR="${DATASET_DIR:-/data1/fangxuebin/boundless-world-model/converted_dataset_task1}"
+DATASET_DIR="${DATASET_DIR:-/data1/fangxuebin/boundless-world-model/converted_dataset_bwm_6tasks}"
 TRAIN_METADATA_PATH="${TRAIN_METADATA_PATH:-${DATASET_DIR}/metadata_train.jsonl}"
 VAL_METADATA_PATH="${VAL_METADATA_PATH:-${DATASET_DIR}/metadata_test.jsonl}"
 ACTION_STAT_PATH="${ACTION_STAT_PATH:-/data1/fangxuebin/boundless-world-model/converted_dataset_task1/stat.json}"
@@ -19,18 +19,18 @@ CONFIG_PATH="${CONFIG_PATH:-configs/train/train_wan22_ti2v_5b_action_adaln.yaml}
 ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/train/accelerate_fsdp_multi_gpu.yaml}"
 MACHINE_RANK="${MACHINE_RANK:-}"
 DATASET_NUM_WORKERS="${DATASET_NUM_WORKERS:-1}"
-MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-1000}"
-SAVE_STEPS="${SAVE_STEPS:-1000}"
+MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-10000}"
+SAVE_STEPS="${SAVE_STEPS:-2000}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-16}"
 DETERMINISTIC="${DETERMINISTIC:-0}"
 USE_WANDB="${USE_WANDB:-0}"
 USE_SWANLAB="${USE_SWANLAB:-0}"
-RUN_NAME="${RUN_NAME:-train_wan22_ti2v_5b_action_adaln_pefm_soft_w1}"
+RUN_NAME="${RUN_NAME:-train_wan22_ti2v_5b_action_adaln_pefm_6tasks}"
 RESUME_FROM="${RESUME_FROM:-}"
-OUTPUT_PATH="${OUTPUT_PATH:-outputs/training/train_wan22_ti2v_5b_action_adaln_pefm_soft_w1}"
-EVALUATOR_PATH="${EVALUATOR_PATH:-}"
-EVALUATOR_LOSS_WEIGHT="${EVALUATOR_LOSS_WEIGHT:-0.5}"
-LOG_PATH="${LOG_PATH:-outputs/training/train_wan22_ti2v_5b_action_adaln_pefm_soft_w1/train.log}"
+OUTPUT_PATH="${OUTPUT_PATH:-outputs/training/train_wan22_ti2v_5b_action_adaln_pefm_6tasks}"
+EVALUATOR_PATH="${EVALUATOR_PATH:-/data1/fangxuebin/pefm/outputs/evaluator/soft_6tasks_epoch_100/frozen_evaluator.pt}"
+EVALUATOR_LOSS_WEIGHT="${EVALUATOR_LOSS_WEIGHT:-0.1}"
+LOG_PATH="${LOG_PATH:-outputs/training/train_wan22_ti2v_5b_action_adaln_pefm_6tasks/train.log}"
 
 LAUNCH_CMD=(
   "${PYTHON_BIN}" -m accelerate.commands.launch
@@ -85,4 +85,16 @@ if [ -n "${RESUME_FROM}" ]; then
   TRAIN_CMD+=(--resume_from "${RESUME_FROM}")
 fi
 
+mkdir -p -- "$(dirname -- "${LOG_PATH}")"
 "${LAUNCH_CMD[@]}" "${TRAIN_CMD[@]}" 2>&1 | tee -a "${LOG_PATH}"
+
+  # 续训不需要导出，直接：
+
+  # RESUME_FROM=outputs/training/<run>/states/step-<N> \
+  # bash scripts/train_distributed_local.sh
+
+  # 需要单文件权重时，训练停止后执行：
+
+  # /home/fangxuebin/.conda/envs/BWM/bin/accelerate merge-weights \
+  #   outputs/training/<run>/states/step-<N>/pytorch_model_fsdp_0 \
+  #   outputs/training/<run>/exported

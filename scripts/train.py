@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.graceful_exit import GracefulExit
 from wan_video_action.data import build_train_dataset
 from wan_video_action.evaluator_loss import initialize_frozen_evaluator
 from wan_video_action.logger import ModelLogger
@@ -289,4 +290,13 @@ if __name__ == "__main__":
     if args.task.endswith(":data_process"):
         launcher(accelerator, train_dataset, model, model_logger, args=args)
     else:
-        launcher(accelerator, train_dataset, val_dataset, model, model_logger, args=args)
+        graceful_exit = GracefulExit(accelerator)
+        launcher(
+            accelerator,
+            train_dataset,
+            val_dataset,
+            model,
+            model_logger,
+            args=args,
+            graceful_exit=graceful_exit,
+        )

@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+from contextlib import contextmanager
 
 from diffsynth.diffusion.runner import ModelLogger as DiffSynthModelLogger
 
@@ -87,14 +88,15 @@ class ModelLogger(DiffSynthModelLogger):
         )
         self.epoch_id = 0
         self.batch_in_epoch = 0
+        self._saved_state_steps = set()
 
     @property
-    def latest_state_dir(self):
-        return os.path.join(self.output_path, "states", "latest")
+    def state_dir(self):
+        return os.path.join(self.output_path, "states", f"step-{self.num_steps}")
 
     @property
-    def latest_state_metadata_path(self):
-        return os.path.join(self.output_path, "states", "latest.json")
+    def state_metadata_path(self):
+        return self.state_dir + ".json"
 
     def state_dict(self):
         return {
@@ -123,15 +125,57 @@ class ModelLogger(DiffSynthModelLogger):
         self.num_steps += 1
         self.set_progress(epoch_id, batch_in_epoch)
         if self.num_steps % save_steps == 0:
-            self.save_model(accelerator, model, f"step-{self.num_steps}.safetensors")
-            self.save_training_state(accelerator)
+            self.save_checkpoint(accelerator, model)
 
     def on_training_end(self, accelerator, model, save_steps):
         if self.num_steps % save_steps != 0:
+            self.save_checkpoint(accelerator, model)
+
+    def save_checkpoint(self, accelerator, model):
+        if self.num_steps in self._saved_state_steps:
+            accelerator.print(f"Training state for step {self.num_steps} already saved at {self.state_dir}")
+            return self.state_dir
+        if os.path.exists(self.state_dir) or os.path.exists(self.state_metadata_path):
+            raise FileExistsError(f"Refusing to overwrite existing training state: {self.state_dir}")
+
+        if getattr(accelerator.state, "fsdp_plugin", None) is not None:
+            return self.save_training_state(accelerator, sharded=True)
+        else:
             self.save_model(accelerator, model, f"step-{self.num_steps}.safetensors")
-            self.save_training_state(accelerator)
+            return self.save_training_state(accelerator)
+
+    @contextmanager
+    def fsdp_state_dict_type(self, accelerator, state_dict_type=None, offload_to_cpu=None):
+        plugin = getattr(accelerator.state, "fsdp_plugin", None)
+        if plugin is None or state_dict_type is None:
+            yield
+            return
+
+        original = (
+            plugin.state_dict_type,
+            plugin.state_dict_config,
+            plugin.optim_state_dict_config,
+        )
+        plugin.state_dict_type = state_dict_type
+        plugin.state_dict_config = None
+        plugin.optim_state_dict_config = None
+        plugin.set_state_dict_type()
+        if offload_to_cpu is not None:
+            plugin.state_dict_config.offload_to_cpu = offload_to_cpu
+            plugin.optim_state_dict_config.offload_to_cpu = offload_to_cpu
+        try:
+            yield
+        finally:
+            (
+                plugin.state_dict_type,
+                plugin.state_dict_config,
+                plugin.optim_state_dict_config,
+            ) = original
 
     def save_model(self, accelerator, model, file_name):
+        path = os.path.join(self.output_path, file_name)
+        if os.path.exists(path):
+            raise FileExistsError(f"Refusing to overwrite existing model checkpoint: {path}")
         accelerator.wait_for_everyone()
         state_dict = accelerator.get_state_dict(model)
         if accelerator.is_main_process:
@@ -146,25 +190,75 @@ class ModelLogger(DiffSynthModelLogger):
             }
             state_dict = self.state_dict_converter(state_dict)
             os.makedirs(self.output_path, exist_ok=True)
-            path = os.path.join(self.output_path, file_name)
             accelerator.save(state_dict, path, safe_serialization=True)
 
-    def save_training_state(self, accelerator):
+    def save_training_state(self, accelerator, sharded=False):
+        state_dir = self.state_dir
+        metadata_path = self.state_metadata_path
+        if self.num_steps in self._saved_state_steps:
+            accelerator.print(f"Training state for step {self.num_steps} already saved at {state_dir}")
+            return state_dir
+        if os.path.exists(state_dir) or os.path.exists(metadata_path):
+            raise FileExistsError(f"Refusing to overwrite existing training state: {state_dir}")
+
+        pending_state_dir = state_dir + ".pending"
         accelerator.wait_for_everyone()
-        if accelerator.is_main_process and os.path.isdir(self.latest_state_dir):
-            shutil.rmtree(self.latest_state_dir)
+        if accelerator.is_main_process and os.path.exists(pending_state_dir):
+            shutil.rmtree(pending_state_dir)
         accelerator.wait_for_everyone()
-        accelerator.save_state(self.latest_state_dir)
+        has_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
+        state_dict_type = "SHARDED_STATE_DICT" if sharded and has_fsdp else None
+        with self.fsdp_state_dict_type(accelerator, state_dict_type, offload_to_cpu=False):
+            accelerator.save_state(pending_state_dir)
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
+            os.rename(pending_state_dir, state_dir)
             metadata = {
                 "num_steps": self.num_steps,
                 "epoch_id": self.epoch_id,
                 "batch_in_epoch": self.batch_in_epoch,
-                "state_dir": self.latest_state_dir,
+                "state_dir": state_dir,
+                "state_dict_type": state_dict_type or "FULL_STATE_DICT",
             }
-            os.makedirs(os.path.dirname(self.latest_state_metadata_path), exist_ok=True)
-            with open(self.latest_state_metadata_path, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
+            with open(metadata_path, "w", encoding="utf-8") as f:
                 json.dump(metadata, f, indent=2, sort_keys=True)
                 f.write("\n")
         accelerator.wait_for_everyone()
+        self._saved_state_steps.add(self.num_steps)
+        return state_dir
+
+    def load_training_state(self, accelerator, state_dir):
+        sharded_model_dir = os.path.join(state_dir, "pytorch_model_fsdp_0")
+        if not os.path.isdir(sharded_model_dir):
+            accelerator.load_state(state_dir)
+            return
+
+        from torch.distributed.checkpoint import FileSystemReader, load_sharded_optimizer_state_dict
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+        with self.fsdp_state_dict_type(
+            accelerator,
+            "SHARDED_STATE_DICT",
+            offload_to_cpu=False,
+        ):
+            optimizers = accelerator._optimizers
+            accelerator._optimizers = []
+            try:
+                accelerator.load_state(state_dir)
+            finally:
+                accelerator._optimizers = optimizers
+
+            for index, (model, optimizer) in enumerate(zip(accelerator._models, optimizers)):
+                optimizer_dir = os.path.join(state_dir, f"optimizer_{index}")
+                optimizer_state = load_sharded_optimizer_state_dict(
+                    model.state_dict(),
+                    optimizer_key="optimizer",
+                    storage_reader=FileSystemReader(optimizer_dir),
+                )["optimizer"]
+                optimizer_state = FSDP.optim_state_dict_to_load(
+                    model=model,
+                    optim=optimizer,
+                    optim_state_dict=optimizer_state,
+                )
+                optimizer.load_state_dict(optimizer_state)
