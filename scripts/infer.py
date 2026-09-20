@@ -189,7 +189,9 @@ def prepare_sample_for_rollout(sample: Dict, sample_index: int, pipe, args) -> D
     sample["start_frame"] = start_frame
     sample["end_frame"] = end_frame
     sample["raw_action_shape"] = raw_action_shape
-    sample["output_path"] = os.path.join(args.output_path, f"episode{episode_index}.mp4")
+    sample["output_path"] = os.path.join(
+        args.output_path, sample["task"], f"episode{int(sample['source_episode_index'])}.mp4"
+    )
     sample["action"] = action[:, :total_frames]
     return sample
 
