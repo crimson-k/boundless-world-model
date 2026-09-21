@@ -181,6 +181,7 @@ def model_fn_wan_video_action(
     fused_condition_latent_frames: Optional[int] = None,
     use_gradient_checkpointing: bool = False,
     use_gradient_checkpointing_offload: bool = False,
+    return_hidden_block: Optional[int] = None,
     **kwargs,
 ):
     if dit.seperated_timestep and fuse_vae_embedding_in_latents:
@@ -247,7 +248,16 @@ def model_fn_wan_video_action(
         dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1),
     ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
 
-    for block in dit.blocks:
+    selected_hidden = None
+    if return_hidden_block is not None:
+        return_hidden_block = int(return_hidden_block)
+        if return_hidden_block < 0 or return_hidden_block >= len(dit.blocks):
+            raise ValueError(
+                f"return_hidden_block={return_hidden_block} is outside "
+                f"[0, {len(dit.blocks) - 1}]"
+            )
+
+    for block_id, block in enumerate(dit.blocks):
         if hasattr(block, "cross_attn") and hasattr(block.cross_attn, "text_token_count"):
             block.cross_attn.text_token_count = text_token_count
         if use_gradient_checkpointing_offload:
@@ -265,11 +275,20 @@ def model_fn_wan_video_action(
             )
         else:
             x = block(x, context, t_mod, freqs)
+        if block_id == return_hidden_block:
+            selected_hidden = x
 
-    x = dit.head(x, t)
-    x = dit.unpatchify(x, (f, h, w)) #  (1,6300,3072) → (1,6300,192) → (1,48,21,30,40)
+    velocity = dit.head(x, t)
+    velocity = dit.unpatchify(velocity, (f, h, w)) #  (1,6300,3072) → (1,6300,192) → (1,48,21,30,40)
 
-    return x
+    if return_hidden_block is None:
+        return velocity
+    return {
+        "velocity": velocity,
+        "hidden": selected_hidden,
+        "dit_grid": (f, h, w),
+        "valid_len": f * h * w,
+    }
 
 
 def load_checkpoint_weights(pipe, ckpt_path: str):

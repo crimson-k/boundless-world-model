@@ -85,6 +85,7 @@ def launch_training_task(
     while model_logger.num_steps < args.max_train_steps:
         train_loss = 0.0
         loss_count = 0
+        loss_metric_totals = {}
         optimizer.zero_grad()
         epoch_label = (epoch_id + 1) * args.dataset_repeat - 1
 
@@ -108,6 +109,10 @@ def launch_training_task(
                 loss_item = loss.detach().float().item()
                 train_loss += loss_item
                 loss_count += 1
+                for name, value in accelerator.unwrap_model(model).loss_metrics().items():
+                    loss_metric_totals[name] = loss_metric_totals.get(name, 0.0) + float(
+                        value.detach().float().mean()
+                    )
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
@@ -122,6 +127,9 @@ def launch_training_task(
                     last_step_time = now
 
                     avg_loss = train_loss / loss_count
+                    averaged_loss_metrics = {
+                        name: value / loss_count for name, value in loss_metric_totals.items()
+                    }
                     model_logger.on_step_end(
                         accelerator,
                         model,
@@ -131,6 +139,7 @@ def launch_training_task(
                     )
                     train_loss = 0.0
                     loss_count = 0
+                    loss_metric_totals = {}
 
                     learning_rate = scheduler.get_last_lr()[0]
                     metrics = {
@@ -140,6 +149,7 @@ def launch_training_task(
                         "loss": avg_loss,
                         "lr": learning_rate,
                         "grad_norm": grad_norm,
+                        **averaged_loss_metrics,
                     }
                     training_logger.log_step(metrics, step=model_logger.num_steps)
 

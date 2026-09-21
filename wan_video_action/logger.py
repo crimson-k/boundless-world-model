@@ -61,6 +61,9 @@ class TrainingLogger:
                 "train/epoch": metrics["epoch"],
                 "train/batch_in_epoch": metrics["batch_in_epoch"],
             }
+            for name, value in metrics.items():
+                if name not in {"step", "epoch", "batch_in_epoch", "loss", "lr", "grad_norm"}:
+                    remote_metrics[f"train/{name}"] = value
             self.accelerator.log(remote_metrics, step=step)
 
     def log_validation(self, val_loss, step):

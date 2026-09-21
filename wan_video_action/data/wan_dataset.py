@@ -5,7 +5,7 @@ from diffsynth.core import UnifiedDataset
 
 from wan_video_action.utils import load_action_stats
 
-from .operators import LoadCobotAction, ResolvePromptEmbPath, create_video_operator
+from .operators import LoadCobotAction, LoadRawEEF, ResolvePromptEmbPath, create_video_operator
 
 
 class RoboTwinUnifiedDataset(UnifiedDataset):
@@ -70,9 +70,12 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         frame_indices = None if temporal_info is None else temporal_info.get("frame_indices")
         if temporal_info is not None:
             data.update(temporal_info)
+        source_data = data.copy()
         for key in self.data_file_keys:
             if key in self.special_operator_map:
-                source = data[key] if key in data else data
+                operator = self.special_operator_map[key]
+                source_key = getattr(operator, "source_key", key)
+                source = source_data[source_key] if source_key in source_data else source_data
                 data[key] = self.special_operator_map[key](
                     self._wrap_frame_range_metadata(data, source, frame_indices=frame_indices)
                 )
@@ -191,6 +194,14 @@ def build_robotwin_train_dataset(args, metadata_path=None, repeat=None) -> RoboT
         special_operator_map["action"] = LoadCobotAction(
             base_path=args.dataset_base_path,
             action_type=args.action_type,
+            stat=load_action_stats(args.action_stat_path),
+            num_frames=args.num_frames,
+            time_division_factor=args.time_division_factor,
+            time_division_remainder=args.time_division_remainder,
+        )
+    if "stage2_eef" in keys:
+        special_operator_map["stage2_eef"] = LoadRawEEF(
+            base_path=args.dataset_base_path,
             stat=load_action_stats(args.action_stat_path),
             num_frames=args.num_frames,
             time_division_factor=args.time_division_factor,

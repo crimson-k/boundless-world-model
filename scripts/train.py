@@ -26,6 +26,7 @@ from wan_video_action.loss import FlowMatchSFTLossWanAction
 from wan_video_action.parsers import merge_yaml_and_args, prepare_model_config, resolve_data_keys, add_general_config
 from wan_video_action.pipelines.wan_video_action import WanVideoActionPipeline
 from wan_video_action.runner import launch_training_task
+from wan_video_action.stage2_semantic import initialize_stage2_distiller, noise_sampling_contract
 from wan_video_action.utils import set_global_seed
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -78,10 +79,27 @@ class WanTrainingModule(DiffusionTrainingModule):
             preset_lora_path, preset_lora_model,
             task=task,
         )
+        if args.evaluator_loss_weight and args.stage2_loss_weight:
+            raise ValueError("The decoded-RGB evaluator loss and Stage 2 prior KL are mutually exclusive")
         initialize_frozen_evaluator(
             self.pipe,
             args.evaluator_path,
             args.evaluator_loss_weight,
+        )
+        if args.stage2_loss_weight and num_history_frames != 9:
+            raise ValueError("Stage 2 requires num_history_frames=9")
+        if args.stage2_loss_weight and args.trainable != ["dit"]:
+            raise ValueError("Stage 2 Phase C must use --trainable dit")
+        initialize_stage2_distiller(
+            self.pipe,
+            teacher_path=args.stage2_teacher_path,
+            adapter_path=args.stage2_adapter_path,
+            loss_weight=args.stage2_loss_weight,
+            selected_block=args.stage2_selected_block,
+            weight_schedule=args.stage2_weight_schedule,
+            noise_sampling=noise_sampling_contract(
+                min_timestep_boundary, max_timestep_boundary,
+            ),
         )
         self._original_trainable_param_names = super().trainable_param_names()
 
@@ -103,6 +121,9 @@ class WanTrainingModule(DiffusionTrainingModule):
         self.num_history_frames = num_history_frames
         self.history_template_sampling = int(history_template_sampling)
         self.use_precomputed_latents = args.modes["vae"] == "emb"
+
+    def loss_metrics(self):
+        return getattr(self.pipe, "loss_metrics", {})
 
     def trainable_param_names(self):
         names = getattr(self, "_original_trainable_param_names", None)
@@ -172,6 +193,8 @@ class WanTrainingModule(DiffusionTrainingModule):
             "vace_scale": 1,
             "max_timestep_boundary": self.max_timestep_boundary,
             "min_timestep_boundary": self.min_timestep_boundary,
+            "stage2_rgb": data.get("video"),
+            "stage2_eef": data.get("stage2_eef"),
         }
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
         return inputs_shared, inputs_posi, inputs_nega
@@ -189,6 +212,35 @@ def wan_parser():
     parser = argparse.ArgumentParser(description="WAN Video Action training script.")
     parser = add_general_config(parser)
     return parser
+
+
+def build_training_module(args, model_config, device):
+    return WanTrainingModule(
+        model_paths=json.dumps(model_config["model_paths_list"]),
+        model_id_with_origin_paths=args.model_id_with_origin_paths,
+        tokenizer_path=model_config["tokenizer_path"],
+        trainable_models=",".join(args.trainable),
+        lora_base_model=args.lora_base_model,
+        lora_target_modules=args.lora_target_modules,
+        lora_rank=args.lora_rank,
+        lora_checkpoint=args.lora_checkpoint,
+        preset_lora_path=args.preset_lora_path,
+        preset_lora_model=args.preset_lora_model,
+        use_gradient_checkpointing=args.use_gradient_checkpointing,
+        use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
+        extra_inputs=args.extra_inputs,
+        fp8_models=args.fp8_models,
+        offload_models=args.offload_models,
+        task=args.task,
+        device=device,
+        max_timestep_boundary=args.max_timestep_boundary,
+        min_timestep_boundary=args.min_timestep_boundary,
+        num_history_frames=args.num_history_frames,
+        history_template_sampling=args.history_template_sampling,
+        action_dim=args.action_dim,
+        action_mode=args.modes["action"],
+        args=args,
+    )
 
 
 if __name__ == "__main__":
@@ -227,6 +279,11 @@ if __name__ == "__main__":
     print("[resolved_config] deterministic:", args.deterministic)
     print("[resolved_config] evaluator_path:", args.evaluator_path)
     print("[resolved_config] evaluator_loss_weight:", args.evaluator_loss_weight)
+    print("[resolved_config] stage2_teacher_path:", args.stage2_teacher_path)
+    print("[resolved_config] stage2_adapter_path:", args.stage2_adapter_path)
+    print("[resolved_config] stage2_loss_weight:", args.stage2_loss_weight)
+    print("[resolved_config] stage2_selected_block:", args.stage2_selected_block)
+    print("[resolved_config] stage2_weight_schedule:", args.stage2_weight_schedule)
     loggers = [name for name in ("wandb", "swanlab") if getattr(args, f"use_{name}", False)]
     use_fsdp = os.environ.get("ACCELERATE_USE_FSDP", "false").lower() == "true"
     accumulation_plugin = accelerate.utils.GradientAccumulationPlugin(
@@ -245,31 +302,10 @@ if __name__ == "__main__":
     if args.val_dataset_metadata_path and not args.task.endswith(":data_process"):
         val_dataset = build_train_dataset(args, metadata_path=args.val_dataset_metadata_path, repeat=1)
 
-    model = WanTrainingModule(
-        model_paths=json.dumps(model_config["model_paths_list"]),
-        model_id_with_origin_paths=args.model_id_with_origin_paths,
-        tokenizer_path=model_config["tokenizer_path"],
-        trainable_models=trainable_models,
-        lora_base_model=args.lora_base_model,
-        lora_target_modules=args.lora_target_modules,
-        lora_rank=args.lora_rank,
-        lora_checkpoint=args.lora_checkpoint,
-        preset_lora_path=args.preset_lora_path,
-        preset_lora_model=args.preset_lora_model,
-        use_gradient_checkpointing=args.use_gradient_checkpointing,
-        use_gradient_checkpointing_offload=args.use_gradient_checkpointing_offload,
-        extra_inputs=args.extra_inputs,
-        fp8_models=args.fp8_models,
-        offload_models=args.offload_models,
-        task=args.task,
+    model = build_training_module(
+        args,
+        model_config,
         device="cpu" if args.initialize_model_on_cpu else accelerator.device,
-        max_timestep_boundary=args.max_timestep_boundary,
-        min_timestep_boundary=args.min_timestep_boundary,
-        num_history_frames=args.num_history_frames,
-        history_template_sampling=args.history_template_sampling,
-        action_dim=args.action_dim,
-        action_mode=args.modes["action"],
-        args=args,
     )
     if accelerator.distributed_type == DistributedType.FSDP:
         accelerator.state.fsdp_plugin.ignored_modules = [model.pipe.vae]

@@ -685,6 +685,22 @@ class LoadCobotAction(DataProcessingOperator):
         return arr[None, ...]
 
 
+class LoadRawEEF(LoadCobotAction):
+    """Load the unnormalized absolute EEF trajectory required by PEFM."""
+
+    source_key = "action"
+
+    def __init__(self, *args, **kwargs):
+        kwargs["action_type"] = "eef_abs"
+        super().__init__(*args, **kwargs)
+
+    def _get_min_max(self):
+        return None, None
+
+    def _normalize_bound(self, data, *args, **kwargs):
+        return data
+
+
 def create_video_operator(
     base_path="",
     max_pixels=1920*1080, height=None, width=None,

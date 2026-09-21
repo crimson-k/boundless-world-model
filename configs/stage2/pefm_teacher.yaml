@@ -1,0 +1,20 @@
+dataset: ${oc.env:DATASET_DIR}
+vjepa_checkpoint: ${oc.env:VJEPA_CHECKPOINT}
+output: ${oc.env:TEACHER_OUTPUT}
+resume: null
+init_checkpoint: null
+checkpoint_every: 50
+device: "cuda"
+epochs: 100
+batch_size: 4
+workers: 0
+seed: 42
+lr: 4e-5
+weight_decay: 0.01
+max_grad_norm: 0.5
+max_batches: 0
+freeze_aggregator_epoch: 10
+eval_mode: false
+rssm_model_size: "src/r2dreamer/configs/model/size12M.yaml"
+freeze:
+  - "vjepa_adapter.encoder"

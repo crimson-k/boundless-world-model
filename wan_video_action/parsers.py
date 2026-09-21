@@ -78,6 +78,15 @@ def resolve_data_keys(args, stage="train"):
     if args.modes["text"] == "emb":
         keys.extend(["prompt_emb", "negative_prompt_emb"])
 
+    stage2_enabled = (
+        float(getattr(args, "stage2_loss_weight", 0.0) or 0.0) > 0
+        or bool(getattr(args, "stage2_capture", False))
+    )
+    if stage == "train" and stage2_enabled:
+        if "video" not in keys:
+            keys.append("video")
+        keys.append("stage2_eef")
+
     args.data_keys = keys
     return args
 
@@ -149,7 +158,7 @@ def add_training_config(parser: argparse.ArgumentParser):
     group.add_argument("--min_timestep_boundary", type=float, default=0.0, help="[OPTIONAL] Min timestep boundary (for mixed models, e.g., Wan-AI/Wan2.2-I2V-A14B).")
     group.add_argument("--max_train_steps", type=int, default=None, help="[KEY] Maximum optimizer steps.")
     group.add_argument("--batch_size", type=int, default=1, help="[TUNABLE] Batch size per GPU.")
-    parser.set_defaults(trainable=None)
+    group.add_argument("--trainable", type=str, nargs="+", default=None, help="Model components updated by the optimizer.")
     return parser
 
 
@@ -186,6 +195,20 @@ def add_evaluator_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("evaluator")
     group.add_argument("--evaluator_path", type=str, default=None, help="[OPTIONAL] Frozen PEFM Evaluator bundle path.")
     group.add_argument("--evaluator_loss_weight", type=float, default=0.0, help="[TUNABLE] Prior feature matching loss weight.")
+    return parser
+
+
+def add_stage2_config(parser: argparse.ArgumentParser):
+    group = parser.add_argument_group("stage2")
+    group.add_argument("--stage2_teacher_path", type=str, default=None, help="Frozen PEFM Teacher bundle.")
+    group.add_argument("--stage2_adapter_path", type=str, default=None, help="Frozen PEFM Adapter bundle.")
+    group.add_argument("--stage2_loss_weight", type=float, default=0.0, help="Base weight for Stage-2 prior KL.")
+    group.add_argument("--stage2_selected_block", type=int, default=None, help="Zero-based DiT block index; defaults to the Adapter contract.")
+    group.add_argument(
+        "--stage2_weight_schedule", type=str, default="constant",
+        choices=["constant", "one_minus_sigma"],
+        help="Noise-dependent multiplier applied to stage2_loss_weight.",
+    )
     return parser
 
 
@@ -229,6 +252,7 @@ def add_general_config(parser: argparse.ArgumentParser):
     parser = add_lora_config(parser)
     parser = add_gradient_config(parser)
     parser = add_evaluator_config(parser)
+    parser = add_stage2_config(parser)
     parser = add_tracking_config(parser)
     parser = add_infer_config(parser)
     return parser
