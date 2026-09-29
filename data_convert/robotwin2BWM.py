@@ -8,7 +8,7 @@ The output contains:
   metadata_test.jsonl                    BWM test manifest
   stat.json                              14-D EEF normalization statistics
   data/<task>/<subset>/episode_*.parquet Parquets with observation.state
-  videos/<task>/<subset>/episode_*.mp4   symlinks to source videos
+  videos/<task>/<subset>/episode_*.mp4   symlinks or resized copies of source videos
 
 Use the output with `model.modes.vae: raw` and `action_type: eef_abs`.
 """
@@ -22,9 +22,11 @@ import os
 from pathlib import Path
 
 import h5py
+import imageio.v2 as imageio
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+from PIL import Image
 from tqdm import tqdm
 
 
@@ -239,6 +241,58 @@ def ensure_video_symlink(source: Path, destination: Path, overwrite: bool) -> No
     os.symlink(source, destination)
 
 
+def write_resized_video(
+    source: Path,
+    destination: Path,
+    width: int,
+    height: int,
+    overwrite: bool,
+) -> None:
+    if destination.exists() or destination.is_symlink():
+        if not overwrite:
+            raise FileExistsError(
+                f"Video destination already exists: {destination}. Use --overwrite to replace it."
+            )
+        if destination.is_dir():
+            raise FileExistsError(f"Refusing to replace directory: {destination}")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f"{destination.stem}.tmp{destination.suffix}")
+    temporary.unlink(missing_ok=True)
+    frame_count = 0
+    reader = imageio.get_reader(str(source))
+    try:
+        fps = reader.get_meta_data().get("fps") or 30
+        writer = imageio.get_writer(
+            str(temporary),
+            fps=float(fps),
+            codec="libx264",
+            macro_block_size=1,
+            ffmpeg_log_level="error",
+        )
+        try:
+            for frame in reader:
+                resized = Image.fromarray(frame).resize(
+                    (width, height), Image.Resampling.LANCZOS
+                )
+                writer.append_data(np.asarray(resized))
+                frame_count += 1
+        finally:
+            writer.close()
+    finally:
+        reader.close()
+
+    if frame_count == 0:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"Source video contains no frames: {source}")
+
+    temporary.replace(destination)
+    print(
+        f"  resized {source.name}: {frame_count} frames -> {width}x{height}",
+        flush=True,
+    )
+
+
 def action_stats(states: list[np.ndarray]) -> dict:
     state = np.concatenate(states, axis=0).astype(np.float64)
     stats = {
@@ -341,7 +395,16 @@ def convert(args: argparse.Namespace) -> None:
             hdf5_path,
             overwrite=args.overwrite,
         )
-        ensure_video_symlink(source_video, video_path, overwrite=args.overwrite)
+        if args.video_width is None:
+            ensure_video_symlink(source_video, video_path, overwrite=args.overwrite)
+        else:
+            write_resized_video(
+                source_video,
+                video_path,
+                width=args.video_width,
+                height=args.video_height,
+                overwrite=args.overwrite,
+            )
 
         length = len(state)
         window_starts = temporal_window_starts(
@@ -443,6 +506,16 @@ def main() -> None:
         help="Future-frame stride between windows; defaults to num_frames - num_history_frames.",
     )
     parser.add_argument(
+        "--video-width",
+        type=int,
+        help="Write resized MP4 files at this width instead of creating source symlinks.",
+    )
+    parser.add_argument(
+        "--video-height",
+        type=int,
+        help="Write resized MP4 files at this height instead of creating source symlinks.",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Replace conflicting generated Parquets or video symlinks.",
@@ -462,6 +535,10 @@ def main() -> None:
         args.window_stride = args.num_frames - args.num_history_frames
     if args.window_stride <= 0:
         parser.error("--window-stride must be positive")
+    if (args.video_width is None) != (args.video_height is None):
+        parser.error("--video-width and --video-height must be provided together")
+    if args.video_width is not None and (args.video_width <= 0 or args.video_height <= 0):
+        parser.error("--video-width and --video-height must be positive")
     convert(args)
 
 

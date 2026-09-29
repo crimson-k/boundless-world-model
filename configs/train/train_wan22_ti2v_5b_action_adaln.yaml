@@ -12,8 +12,8 @@ dataset:
   data_keys: null
 
 video:
-  height: 480
-  width: 640
+  height: 192
+  width: 256
   max_pixels: 16777216
   num_frames: 81
   resize_mode: "crop"
@@ -76,10 +76,6 @@ gradient:
   use_gradient_checkpointing_offload: false
   gradient_accumulation_steps: 16
   max_grad_norm: 0.5
-
-evaluator:
-  evaluator_path: "/data1/fangxuebin/pefm/outputs/evaluator/epoch_100/frozen_evaluator_epoch_0100.pt"
-  evaluator_loss_weight: 0.5
 
 tracking:
   use_wandb: false

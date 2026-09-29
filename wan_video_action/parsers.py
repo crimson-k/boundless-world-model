@@ -191,13 +191,6 @@ def add_gradient_config(parser: argparse.ArgumentParser):
     return parser
 
 
-def add_evaluator_config(parser: argparse.ArgumentParser):
-    group = parser.add_argument_group("evaluator")
-    group.add_argument("--evaluator_path", type=str, default=None, help="[OPTIONAL] Frozen PEFM Evaluator bundle path.")
-    group.add_argument("--evaluator_loss_weight", type=float, default=0.0, help="[TUNABLE] Prior feature matching loss weight.")
-    return parser
-
-
 def add_stage2_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("stage2")
     group.add_argument("--stage2_teacher_path", type=str, default=None, help="Frozen PEFM Teacher bundle.")
@@ -251,7 +244,6 @@ def add_general_config(parser: argparse.ArgumentParser):
     parser = add_output_config(parser)
     parser = add_lora_config(parser)
     parser = add_gradient_config(parser)
-    parser = add_evaluator_config(parser)
     parser = add_stage2_config(parser)
     parser = add_tracking_config(parser)
     parser = add_infer_config(parser)

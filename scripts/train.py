@@ -20,7 +20,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.graceful_exit import GracefulExit
 from wan_video_action.data import build_train_dataset
-from wan_video_action.evaluator_loss import initialize_frozen_evaluator
 from wan_video_action.logger import ModelLogger
 from wan_video_action.loss import FlowMatchSFTLossWanAction
 from wan_video_action.parsers import merge_yaml_and_args, prepare_model_config, resolve_data_keys, add_general_config
@@ -78,13 +77,6 @@ class WanTrainingModule(DiffusionTrainingModule):
             lora_base_model, lora_target_modules, lora_rank, lora_checkpoint,
             preset_lora_path, preset_lora_model,
             task=task,
-        )
-        if args.evaluator_loss_weight and args.stage2_loss_weight:
-            raise ValueError("The decoded-RGB evaluator loss and Stage 2 prior KL are mutually exclusive")
-        initialize_frozen_evaluator(
-            self.pipe,
-            args.evaluator_path,
-            args.evaluator_loss_weight,
         )
         if args.stage2_loss_weight and num_history_frames != 9:
             raise ValueError("Stage 2 requires num_history_frames=9")
@@ -277,8 +269,6 @@ if __name__ == "__main__":
     print("[resolved_config] spatial_division_factor:", args.spatial_division_factor)
     print("[resolved_config] max_train_steps:", args.max_train_steps)
     print("[resolved_config] deterministic:", args.deterministic)
-    print("[resolved_config] evaluator_path:", args.evaluator_path)
-    print("[resolved_config] evaluator_loss_weight:", args.evaluator_loss_weight)
     print("[resolved_config] stage2_teacher_path:", args.stage2_teacher_path)
     print("[resolved_config] stage2_adapter_path:", args.stage2_adapter_path)
     print("[resolved_config] stage2_loss_weight:", args.stage2_loss_weight)

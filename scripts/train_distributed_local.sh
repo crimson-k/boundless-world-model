@@ -11,10 +11,10 @@ fi
 
 PYTHON_BIN="${PYTHON_BIN:-/home/fangxuebin/.conda/envs/BWM/bin/python}"
 MODEL_DIR="${MODEL_DIR:-/data1/common_model/modelscope/Wan-AI/Wan2.2-TI2V-5B/}"
-DATASET_DIR="${DATASET_DIR:-/data1/fangxuebin/boundless-world-model/converted_dataset_bwm_6tasks}"
+DATASET_DIR="${DATASET_DIR:-/data1/fangxuebin/boundless-world-model/converted_dataset_bwm_6tasks_256x192}"
 TRAIN_METADATA_PATH="${TRAIN_METADATA_PATH:-${DATASET_DIR}/metadata_train.jsonl}"
 VAL_METADATA_PATH="${VAL_METADATA_PATH:-${DATASET_DIR}/metadata_test.jsonl}"
-ACTION_STAT_PATH="${ACTION_STAT_PATH:-/data1/fangxuebin/boundless-world-model/converted_dataset_task1/stat.json}"
+ACTION_STAT_PATH="${ACTION_STAT_PATH:-${DATASET_DIR}/stat.json}"
 CONFIG_PATH="${CONFIG_PATH:-configs/train/train_wan22_ti2v_5b_action_adaln.yaml}"
 ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/train/accelerate_fsdp_multi_gpu.yaml}"
 MACHINE_RANK="${MACHINE_RANK:-}"
@@ -28,8 +28,6 @@ USE_SWANLAB="${USE_SWANLAB:-0}"
 RUN_NAME="${RUN_NAME:-train_wan22_ti2v_5b_action_adaln_pefm_6tasks}"
 RESUME_FROM="${RESUME_FROM:-}"
 OUTPUT_PATH="${OUTPUT_PATH:-outputs/training/train_wan22_ti2v_5b_action_adaln_pefm_6tasks}"
-EVALUATOR_PATH="${EVALUATOR_PATH:-/data1/fangxuebin/pefm/outputs/evaluator/soft_6tasks_epoch_100/frozen_evaluator.pt}"
-EVALUATOR_LOSS_WEIGHT="${EVALUATOR_LOSS_WEIGHT:-0.1}"
 LOG_PATH="${LOG_PATH:-outputs/training/train_wan22_ti2v_5b_action_adaln_pefm_6tasks/train.log}"
 
 LAUNCH_CMD=(
@@ -53,13 +51,8 @@ TRAIN_CMD=(
   --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}"
   --max_train_steps "${MAX_TRAIN_STEPS}"
   --save_steps "${SAVE_STEPS}"
-  --evaluator_loss_weight "${EVALUATOR_LOSS_WEIGHT}"
   --use_gradient_checkpointing
 )
-
-if [ -n "${EVALUATOR_PATH}" ]; then
-  TRAIN_CMD+=(--evaluator_path "${EVALUATOR_PATH}")
-fi
 
 if [ "${DETERMINISTIC}" = "1" ]; then
   TRAIN_CMD+=(--deterministic)

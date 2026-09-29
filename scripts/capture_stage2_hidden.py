@@ -18,6 +18,14 @@ from wan_video_action.stage2_semantic import build_teacher_batch, noise_sampling
 from wan_video_action.utils import set_global_seed
 
 
+def _load_action_delta_stats(teacher_path):
+    if not teacher_path:
+        return None
+    bundle = torch.load(teacher_path, map_location="cpu", weights_only=False)
+    config = bundle.get("config", {})
+    return config.get("action_delta_stats") if isinstance(config, dict) else None
+
+
 def _cpu(value):
     if torch.is_tensor(value):
         return value.detach().cpu()
@@ -37,7 +45,6 @@ def main():
     args = merge_yaml_and_args(cli.config, parser, cli, cli_args)
     args.stage2_capture = True
     args.stage2_loss_weight = 0.0
-    args.evaluator_loss_weight = 0.0
     args = resolve_data_keys(args, stage="train")
     model_config = prepare_model_config(args)
     set_global_seed(args.seed, deterministic=args.deterministic)
@@ -46,6 +53,7 @@ def main():
     model = build_training_module(args, model_config, device=torch.device("cuda"))
     model.eval()
     pipe = model.pipe
+    action_delta_stats = _load_action_delta_stats(args.stage2_teacher_path)
 
     output = Path(args.capture_output)
     output.mkdir(parents=True, exist_ok=True)
@@ -74,6 +82,7 @@ def main():
             model_output = result["model_output"]
             teacher_batch = build_teacher_batch(
                 shared["stage2_rgb"], shared["stage2_eef"],
+                action_delta_stats=action_delta_stats,
             )
             payload = {
                 "hidden": model_output["hidden"],

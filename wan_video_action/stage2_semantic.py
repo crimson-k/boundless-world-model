@@ -63,10 +63,14 @@ def initialize_stage2_distiller(
         noise_sampling=noise_sampling,
     )
     object.__setattr__(pipe, "stage2_distiller", distiller)
+    object.__setattr__(
+        pipe, "stage2_action_delta_stats",
+        getattr(distiller.teacher, "action_delta_stats", None),
+    )
     pipe.stage2_selected_block = selected_block
 
 
-def build_teacher_batch(rgb, raw_eef, time_division_factor=4):
+def build_teacher_batch(rgb, raw_eef, time_division_factor=4, action_delta_stats=None):
     """Create the fixed 21-group Teacher input from raw BWM sample tensors."""
     if rgb is None or raw_eef is None:
         raise KeyError("Stage 2 requires GT video and unnormalized absolute EEF data")
@@ -74,7 +78,10 @@ def build_teacher_batch(rgb, raw_eef, time_division_factor=4):
 
     rgb = torch.as_tensor(rgb)
     raw_eef = torch.as_tensor(raw_eef, device=rgb.device, dtype=torch.float32)
-    return stage2_teacher_batch(rgb, raw_eef, time_division_factor=time_division_factor)
+    return stage2_teacher_batch(
+        rgb, raw_eef, time_division_factor=time_division_factor,
+        action_delta_stats=action_delta_stats,
+    )
 
 
 def categorical_prior_kl(target_logits, student_logits):
@@ -107,6 +114,7 @@ def stage2_prior_loss(pipe, model_output, inputs, sigma):
         inputs.get("stage2_rgb"),
         inputs.get("stage2_eef"),
         time_division_factor=4,
+        action_delta_stats=getattr(pipe, "stage2_action_delta_stats", None),
     )
     result = distiller(
         hidden=model_output["hidden"],
