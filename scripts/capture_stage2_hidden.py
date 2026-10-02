@@ -76,6 +76,7 @@ def main():
                 shared["stage2_rgb"], shared["stage2_eef"],
             )
             payload = {
+                "task": sample["task"],
                 "hidden": model_output["hidden"],
                 "dit_grid": tuple(model_output["dit_grid"]),
                 "valid_len": int(model_output["valid_len"]),

@@ -10,46 +10,31 @@ import unittest
 import torch
 from torch import nn
 
-from pefm.models import SpatiallyAlignedAdapter, TemporalSemanticDistillation, TokenAggregator
-from pefm.training.train_adapter import HiddenBatchDataset, _unpack_batch
+from pefm.models import SpatiallyAlignedAdapter, TemporalSemanticDistillation, TokenAggregator, ActionPredictor
+from pefm.training.train_adapter import HiddenBatchDataset
 
 from wan_video_action.loss import FlowMatchSFTLossWanAction
 from wan_video_action.parsers import resolve_data_keys
 from wan_video_action.pipelines.wan_video_action import model_fn_wan_video_action
-from wan_video_action.stage2_semantic import stage2_prior_loss
+from wan_video_action.stage2_semantic import stage2_embedding_loss
+
+
+class TinyVisual(nn.Module):
+    def forward(self, rgb, group_ids):
+        signal = rgb.float().mean(dim=(1, 2, 4, 5))
+        ids = group_ids[0]
+        grouped = signal.new_zeros(signal.shape[0], 21)
+        grouped.index_add_(1, ids, signal)
+        grouped /= torch.bincount(ids).to(grouped)
+        return grouped[:, :, None, None].expand(-1, -1, 300, 4)
 
 
 class FakeTeacher(nn.Module):
     def __init__(self):
         super().__init__()
+        self.vjepa_adapter = TinyVisual()
         self.token_aggregator = TokenAggregator(token_dim=4, embed_dim=3, num_heads=1)
-        self.state_head = nn.Linear(3, 6)
-        self.action_head = nn.Linear(14, 6)
-
-    def _posterior(self, embed):
-        return self.state_head(embed).reshape(embed.shape[0], embed.shape[1], 2, 3)
-
-    def forward(self, batch):
-        batch_size = batch["rgb"].shape[0]
-        frame_signal = batch["rgb"].float().mean(dim=(1, 2, 4, 5))
-        ids = batch["group_ids"][0].to(frame_signal.device)
-        grouped = frame_signal.new_zeros(batch_size, 21)
-        grouped.index_add_(1, ids, frame_signal)
-        grouped = grouped / torch.bincount(ids).to(grouped).view(1, -1)
-        visual_grid = grouped[:, :, None, None, None, None].expand(-1, -1, 1, 15, 20, 4)
-        embed = self.token_aggregator(visual_grid.flatten(2, 4))
-        return {
-            "visual_grid": visual_grid,
-            "embed": embed,
-            "posterior_logits": self._posterior(embed),
-        }
-
-    def forward_embeddings(self, embed, actions, reset):
-        del reset
-        posterior = self._posterior(embed)
-        action_logits = self.action_head(actions).reshape(actions.shape[0], actions.shape[1], 2, 3)
-        prior = torch.cat((posterior[:, :1], posterior[:, :-1] + action_logits[:, :-1]), dim=1)
-        return {"embed": embed, "posterior_logits": posterior, "prior_logits": prior}
+        self.rgb_grid = self.aligned_grid = (15, 20)
 
 
 class AddBlock(nn.Module):
@@ -91,11 +76,14 @@ class TinyDiT(nn.Module):
 
 
 class Stage2BoundaryTest(unittest.TestCase):
+    def setUp(self):
+        torch.set_num_threads(1)
+
     @staticmethod
     def make_distiller():
         teacher = FakeTeacher()
         adapter = SpatiallyAlignedAdapter(4, vjepa_dim=4, hidden_dim=4)
-        return teacher, adapter, TemporalSemanticDistillation(teacher, adapter).freeze_adapter()
+        return teacher, adapter, TemporalSemanticDistillation(teacher, adapter, ActionPredictor(3, 8)).freeze_adapter()
 
     def test_model_fn_returns_selected_block_hidden(self):
         dit = TinyDiT()
@@ -134,12 +122,14 @@ class Stage2BoundaryTest(unittest.TestCase):
         pipe = SimpleNamespace(
             stage2_distiller=distiller,
             stage2_loss_weight=0.5,
+            stage2_align_scale=1.0,
+            stage2_pred_scale=1.0,
             stage2_weight_schedule="constant",
         )
         hidden = torch.randn(1, 6300, 4, requires_grad=True)
         rgb = torch.randn(1, 1, 3, 81, 2, 2)
         raw_eef = torch.randn(1, 81, 14)
-        loss, weight, per_step = stage2_prior_loss(
+        loss, metrics = stage2_embedding_loss(
             pipe,
             {
                 "hidden": hidden,
@@ -149,8 +139,9 @@ class Stage2BoundaryTest(unittest.TestCase):
             {"stage2_rgb": rgb, "stage2_eef": raw_eef},
             sigma=torch.tensor([0.6]),
         )
-        self.assertEqual(tuple(per_step.shape), (1, 17))
-        self.assertEqual(float(weight), 0.5)
+        self.assertEqual(float(metrics["stage2_weight"]), 0.5)
+        self.assertIn("align_mse_t03", metrics)
+        self.assertIn("pred_mse_t20", metrics)
         loss.backward()
         self.assertTrue(torch.isfinite(hidden.grad).all())
         self.assertGreater(float(hidden.grad.reshape(1, 21, -1).norm(dim=-1)[0, 19]), 0)
@@ -158,7 +149,7 @@ class Stage2BoundaryTest(unittest.TestCase):
         self.assertTrue(all(parameter.grad is None for parameter in teacher.parameters()))
         self.assertTrue(all(parameter.grad is None for parameter in adapter.parameters()))
 
-    def test_flow_loss_and_pefm_prior_loss_share_one_backward(self):
+    def test_flow_loss_and_embedding_losses_share_one_backward(self):
         class Scheduler:
             timesteps = torch.tensor([0.5])
             sigmas = torch.tensor([0.6])
@@ -199,6 +190,8 @@ class Stage2BoundaryTest(unittest.TestCase):
             action_injection_mode="none",
             stage2_distiller=distiller,
             stage2_loss_weight=0.5,
+            stage2_align_scale=1.0,
+            stage2_pred_scale=1.0,
             stage2_weight_schedule="constant",
             stage2_selected_block=1,
         )
@@ -214,9 +207,43 @@ class Stage2BoundaryTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(dit_weight.grad))
         self.assertEqual(
             set(pipe.loss_metrics),
-            {"flow_loss", "noise_sigma", "prior_kl", "stage2_weight"}
-            | {f"prior_kl_t{step:02d}" for step in range(4, 21)},
+            {"flow_loss", "noise_sigma", "align_mse", "pred_mse", "stage2_weight", "stage2_active"}
+            | {f"pred_mse_t{step:02d}" for step in range(4, 21)}
+            | {f"align_mse_t{step:02d}" for step in range(3, 20)},
         )
+
+    def test_auxiliary_ablation_and_noise_gate(self):
+        _, _, distiller = self.make_distiller()
+        hidden = torch.randn(1, 6300, 4, requires_grad=True)
+        output = dict(hidden=hidden, dit_grid=(21, 15, 20), valid_len=6300)
+        inputs = dict(stage2_rgb=torch.randn(1, 1, 3, 81, 2, 2), stage2_eef=torch.randn(1, 81, 14))
+        pipe = SimpleNamespace(stage2_distiller=distiller, stage2_loss_weight=.3,
+                               stage2_align_scale=1., stage2_pred_scale=1., stage2_weight_schedule="constant")
+        # 外层 bf16 autocast 不应改变辅助目标和 Adapter 的计算精度。
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            total, metrics = stage2_embedding_loss(pipe, output, inputs, torch.tensor([.2]))
+        torch.testing.assert_close(total.detach(), .3 * (metrics["align_mse"] + metrics["pred_mse"]))
+        pipe.stage2_pred_scale = 0.
+        align, _ = stage2_embedding_loss(pipe, output, inputs, torch.tensor([.2]))
+        torch.testing.assert_close(align.detach(), .3 * metrics["align_mse"])
+        distiller.sigma_max = .1
+        masked, metrics = stage2_embedding_loss(pipe, output, inputs, torch.tensor([.2]))
+        self.assertEqual(float(masked.detach()), 0.)
+        self.assertEqual(float(metrics["stage2_active"]), 0.)
+        masked.backward()
+        self.assertEqual(float(hidden.grad.norm()), 0.)
+
+    def test_transfer_keeps_raw_auxiliary_inputs_in_float32(self):
+        from scripts.train import WanTrainingModule
+        module = WanTrainingModule.__new__(WanTrainingModule)
+        value = torch.tensor([1.0001, 1.0002])
+        result = module.transfer_data_to_device(
+            ({"stage2_eef": value, "stage2_rgb": value, "action": value},),
+            torch.device("cpu"), torch.bfloat16,
+        )[0]
+        self.assertEqual(result["action"].dtype, torch.bfloat16)
+        torch.testing.assert_close(result["stage2_eef"], value)
+        torch.testing.assert_close(result["stage2_rgb"], value)
 
     def test_stage2_dataset_keys_include_rgb_and_raw_eef(self):
         args = argparse.Namespace(
@@ -251,9 +278,8 @@ class Stage2BoundaryTest(unittest.TestCase):
                 json.dumps({"path": "sample.pt"}) + "\n", encoding="utf-8",
             )
             payload = HiddenBatchDataset(directory / "manifest.jsonl")[0]
-            unpacked = _unpack_batch(payload)
-        self.assertEqual(tuple(unpacked[0].shape), (1, 6300, 4))
-        self.assertEqual(unpacked[1:4], ((21, 15, 20), 6300, 1))
+        self.assertEqual(tuple(payload["hidden"].shape), (1, 6300, 4))
+        self.assertEqual(tuple(payload["dit_grid"]), (21, 15, 20))
 
 
 if __name__ == "__main__":

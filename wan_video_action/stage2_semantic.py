@@ -1,4 +1,4 @@
-"""BWM ownership of the Phase-C V-JEPA--RSSM semantic loss."""
+"""BWM ownership of the Phase-C fixed-embedding alignment and prediction loss."""
 
 from collections.abc import Mapping
 
@@ -21,8 +21,12 @@ def initialize_stage2_distiller(
     selected_block=None,
     weight_schedule="constant",
     noise_sampling=None,
+    align_scale=1.0,
+    pred_scale=1.0,
 ):
     """Attach the frozen PEFM Teacher and Adapter without registering trainable parameters."""
+    pipe.stage2_align_scale = float(align_scale)
+    pipe.stage2_pred_scale = float(pred_scale)
     pipe.stage2_loss_weight = float(loss_weight)
     pipe.stage2_weight_schedule = str(weight_schedule)
     if pipe.stage2_loss_weight == 0:
@@ -53,15 +57,17 @@ def initialize_stage2_distiller(
             f"Selected DiT block mismatch: config={selected_block}, bundle={bundle_block}"
         )
 
-    distiller = load_stage2_distiller(
-        teacher_bundle=teacher_path,
-        adapter_bundle=adapter_path,
-        device=pipe.device,
-        dtype=pipe.torch_dtype,
-        dit_dim=int(pipe.dit.dim),
-        selected_block=selected_block,
-        noise_sampling=noise_sampling,
-    )
+    # 辅助模块加载不改变后续 FM 采样的随机数序列；A/B/C 采用相同精度。
+    with torch.random.fork_rng(devices=[]):
+        distiller = load_stage2_distiller(
+            teacher_bundle=teacher_path,
+            adapter_bundle=adapter_path,
+            device=pipe.device,
+            dtype=torch.float32,
+            dit_dim=int(pipe.dit.dim),
+            selected_block=selected_block,
+            noise_sampling=noise_sampling,
+        )
     object.__setattr__(pipe, "stage2_distiller", distiller)
     pipe.stage2_selected_block = selected_block
 
@@ -77,16 +83,6 @@ def build_teacher_batch(rgb, raw_eef, time_division_factor=4):
     return stage2_teacher_batch(rgb, raw_eef, time_division_factor=time_division_factor)
 
 
-def categorical_prior_kl(target_logits, student_logits):
-    """KL(target || student), summed over RSSM variables without free-nats clipping."""
-    target_logits = target_logits.detach().float()
-    student_logits = student_logits.float()
-    target_logprob = torch.log_softmax(target_logits, dim=-1)
-    student_logprob = torch.log_softmax(student_logits, dim=-1)
-    target_prob = torch.softmax(target_logits, dim=-1)
-    return (target_prob * (target_logprob - student_logprob)).sum(-1).sum(-1)
-
-
 def semantic_weight(base_weight, sigma, schedule):
     sigma = sigma.detach().float().mean()
     if schedule == "constant":
@@ -98,30 +94,24 @@ def semantic_weight(base_weight, sigma, schedule):
     return multiplier * float(base_weight)
 
 
-def stage2_prior_loss(pipe, model_output, inputs, sigma):
-    """Run the frozen PEFM path and reduce its 17 paired logits on the BWM side."""
-    distiller = getattr(pipe, "stage2_distiller", None)
-    if distiller is None:
-        raise ValueError("Stage 2 loss is enabled but no distiller is attached")
-    teacher_batch = build_teacher_batch(
-        inputs.get("stage2_rgb"),
-        inputs.get("stage2_eef"),
-        time_division_factor=4,
-    )
-    result = distiller(
-        hidden=model_output["hidden"],
-        dit_grid=model_output["dit_grid"],
-        valid_len=model_output["valid_len"],
-        teacher_batch=teacher_batch,
-        num_views=1,
-        phase="bwm",
-    )
-    prior = result["prior"]
-    per_step = categorical_prior_kl(
-        prior["gt_posterior"], prior["generated_prior"],
-    )
-    loss = per_step.mean()
-    weight = semantic_weight(
-        pipe.stage2_loss_weight, sigma, pipe.stage2_weight_schedule,
-    )
-    return loss, weight, per_step.detach()
+def stage2_embedding_loss(pipe, model_output, inputs, sigma):
+    """固定辅助模块的参数，但保留两项损失对 DiT hidden 的梯度。"""
+    distiller = pipe.stage2_distiller
+    weight = semantic_weight(pipe.stage2_loss_weight, sigma, pipe.stage2_weight_schedule)
+    if float(sigma.max()) > distiller.sigma_max:
+        zero = model_output["hidden"].float().sum() * 0
+        return zero, {"align_mse": zero.detach(), "pred_mse": zero.detach(),
+                      "stage2_weight": weight.detach(), "stage2_active": zero.detach()}
+    teacher_batch = build_teacher_batch(inputs.get("stage2_rgb"), inputs.get("stage2_eef"))
+    with torch.autocast(device_type=model_output["hidden"].device.type, enabled=False):
+        result = distiller(hidden=model_output["hidden"], dit_grid=model_output["dit_grid"],
+                           valid_len=model_output["valid_len"], teacher_batch=teacher_batch,
+                           sigma=sigma, num_views=1)
+    loss = weight * (pipe.stage2_align_scale * result["align"] + pipe.stage2_pred_scale * result["pred"])
+    metrics = {"align_mse": result["align"].detach(), "pred_mse": result["pred"].detach(),
+               "stage2_weight": weight.detach(), "stage2_active": result["active_fraction"].detach()}
+    for name in ("align", "pred"):
+        start = 3 if name == "align" else 4
+        metrics.update({f"{name}_mse_t{start + i:02d}": value.mean().detach()
+                        for i, value in enumerate(result[name + "_per_step"].unbind(1))})
+    return loss, metrics

@@ -303,3 +303,37 @@ Contributors are listed in alphabetical order by English name.
 If you find **BWM** is useful in your research or applications, please consider giving us a **star** 🌟.
 
 ---
+
+## Stage 2-B：固定特征与动作预测
+
+`stage2-B` 实现 `notes/stage2_simplified.html` 的结构。PEFM 与 BWM 必须一起使用各自的 `stage2-B` 分支；本机的独立工作目录分别是 `/data1/fangxuebin/dev/wm/stage2-B/pefm` 和 `/data1/fangxuebin/dev/wm/stage2-B/boundless-world-model`。原工作目录仍可继续训练，所有新输出默认写入新 BWM 目录下的 `outputs/stage2_B`。
+
+复用已训练 Teacher 中的 V-JEPA 和 TokenAggregator，并始终冻结。阶段 A 训练线性 B、动作 MLP、GRU 和线性 D；阶段 B 只训练接收 σ 的空间 Adapter，默认先对齐 2 个 epoch，再加入预测；阶段 C 只更新 DiT。当前对齐使用第 3–19 组，预测使用第 4–20 组。每个动作片段包含按时间排序的四个逐帧 EEF 相对动作，不能复用旧版只存组间动作差的 capture。两个损失使用训练集固定标准差归一化的 MSE；统计量和预测器一起存入 Adapter checkpoint。
+
+先设置只读输入路径，在 tmux 中逐阶段启动：
+
+```bash
+cd /data1/fangxuebin/dev/wm/stage2-B/boundless-world-model
+export DATASET_DIR=/data1/fangxuebin/dev/wm/boundless-world-model/converted_dataset_bwm_6tasks_256x192
+export TEACHER_BUNDLE=/data1/fangxuebin/dev/wm/boundless-world-model/outputs/stage2_256x192/teacher/frozen_evaluator.pt
+tmux new-session -s stage2_B_capture 'bash scripts/train_stage2.sh capture'
+```
+
+`capture` 完成后，依次以相同方式启动 `cache`、`predictor` 和 `no-actions`。后二者采用同容量网络和相同默认预算，分别报告验证集上的预测、均值、保持当前状态、同任务动作打乱与动作时间偏移误差。训练集拟合的线性读出器还会报告留出集上的末端位置与下一组位移误差。应先检查表示是否保留运动信息、动作预测是否优于基线，再启动 `adapter`。可在 predictor 命令后加 `--horizon 2` 或 `--horizon 4` 做开放循环预测；首轮默认一步。
+
+Adapter 使用 `adapter_best.pt`，按验证集的完整对齐加预测损失选择，且不从仅做对齐的预热阶段选取。日志包含不同噪声区间的正确/打乱配对误差，以及 GT 起点和估计起点的预测误差。`SIGMA_MAX` 默认 1，可在阶段 B 设置更小值；该区间保存到 checkpoint，并由 C 自动沿用。FM 始终覆盖完整噪声范围。
+
+C 的三个入口是 `baseline`、`align`、`predict`，输出目录相互独立；三组应使用相同数据、种子、训练步数、初始 DiT/动作编码器权重及 Adapter checkpoint。`STAGE2_LOSS_WEIGHT` 默认 0.1，作为辅助项总倍率；`--stage2_align_scale` 和 `--stage2_pred_scale` 分别控制两项的相对系数。额外参数会传给训练入口，例如 `--max_train_steps 8000 --use_gradient_checkpointing`。本脚本默认分辨率 256×192、block 15，可通过 `WIDTH`、`HEIGHT`、`SELECTED_BLOCK` 调整；capture 与 C 必须一致。普通推理入口不加载辅助分支。
+
+本次只验证实现和 CPU 小样例，没有启动上述 GPU 实验。真实模型的收敛、显存占用与生成轨迹收益仍需实验验证。最终按提案比较 trajectory accuracy，并检查 SAM/warp distance、PSNR、SSIM、JEPA；辅助误差下降不能替代生成评测，也不能证明仅凭过去预测未来。
+
+CPU 检查无需安装额外依赖：
+
+```bash
+export CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$PWD:$PWD/../pefm"
+python -m unittest discover -s ../pefm/test_scripts -p test_stage2_semantic.py -v
+python -m unittest discover -s test_scripts -p test_stage2_bwm.py -v
+```
+
+固定目标和辅助分支在 A/B/C 中统一使用 float32，DiT 仍沿用原训练精度。原始 RGB/EEF 在传入辅助分支前保留 float32，避免逐帧位移被 bf16 舍入。辅助分支因此比旧 bf16 实现占用更多显存，正式启动前应做单 batch 显存检查。

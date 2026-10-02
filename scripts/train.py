@@ -80,7 +80,7 @@ class WanTrainingModule(DiffusionTrainingModule):
             task=task,
         )
         if args.evaluator_loss_weight and args.stage2_loss_weight:
-            raise ValueError("The decoded-RGB evaluator loss and Stage 2 prior KL are mutually exclusive")
+            raise ValueError("The decoded-RGB evaluator loss and Stage 2 embedding losses are mutually exclusive")
         initialize_frozen_evaluator(
             self.pipe,
             args.evaluator_path,
@@ -95,6 +95,8 @@ class WanTrainingModule(DiffusionTrainingModule):
             teacher_path=args.stage2_teacher_path,
             adapter_path=args.stage2_adapter_path,
             loss_weight=args.stage2_loss_weight,
+            align_scale=args.stage2_align_scale,
+            pred_scale=args.stage2_pred_scale,
             selected_block=args.stage2_selected_block,
             weight_schedule=args.stage2_weight_schedule,
             noise_sampling=noise_sampling_contract(
@@ -199,6 +201,15 @@ class WanTrainingModule(DiffusionTrainingModule):
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
         return inputs_shared, inputs_posi, inputs_nega
 
+    def transfer_data_to_device(self, data, device, torch_float_dtype=None):
+        converted = super().transfer_data_to_device(data, device, torch_float_dtype)
+        if isinstance(data, dict):
+            # 固定目标及逐帧位移不能先量化为 bf16，否则小位移可能被舍入抹掉。
+            for key in ("stage2_rgb", "stage2_eef"):
+                if data.get(key) is not None:
+                    converted[key] = torch.as_tensor(data[key], device=device, dtype=torch.float32)
+        return converted
+
     def forward(self, data, inputs=None):
         if inputs is None: inputs = self.get_pipeline_inputs(data)
         inputs = self.transfer_data_to_device(inputs, self.pipe.device, self.pipe.torch_dtype)
@@ -282,6 +293,8 @@ if __name__ == "__main__":
     print("[resolved_config] stage2_teacher_path:", args.stage2_teacher_path)
     print("[resolved_config] stage2_adapter_path:", args.stage2_adapter_path)
     print("[resolved_config] stage2_loss_weight:", args.stage2_loss_weight)
+    print("[resolved_config] stage2_align_scale:", args.stage2_align_scale)
+    print("[resolved_config] stage2_pred_scale:", args.stage2_pred_scale)
     print("[resolved_config] stage2_selected_block:", args.stage2_selected_block)
     print("[resolved_config] stage2_weight_schedule:", args.stage2_weight_schedule)
     loggers = [name for name in ("wandb", "swanlab") if getattr(args, f"use_{name}", False)]

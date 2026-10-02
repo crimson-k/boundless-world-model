@@ -3,7 +3,7 @@ import warnings
 import torch
 
 from .evaluator_loss import decode_clean_video, prior_feature_matching_loss
-from .stage2_semantic import stage2_prior_loss
+from .stage2_semantic import stage2_embedding_loss
 
 
 def flow_match_forward(pipe, *, return_hidden_block=None, timestep_id=None, **inputs):
@@ -77,18 +77,11 @@ def FlowMatchSFTLossWanAction(pipe, **inputs):
     }
 
     if stage2_enabled:
-        prior_kl, stage2_weight, per_step = stage2_prior_loss(
+        auxiliary_loss, metrics = stage2_embedding_loss(
             pipe, output["model_output"], inputs, sigma,
         )
-        pipe.loss_metrics.update({
-            "prior_kl": prior_kl.detach(),
-            "stage2_weight": stage2_weight.detach(),
-        })
-        pipe.loss_metrics.update({
-            f"prior_kl_t{logical_step:02d}": per_step[:, offset].mean()
-            for offset, logical_step in enumerate(range(4, 21))
-        })
-        return flow_loss + stage2_weight * prior_kl
+        pipe.loss_metrics.update(metrics)
+        return flow_loss + auxiliary_loss
 
     evaluator = getattr(pipe, "evaluator", None)
     evaluator_weight = float(getattr(pipe, "evaluator_loss_weight", 0.0))
