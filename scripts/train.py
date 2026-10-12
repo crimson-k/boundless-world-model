@@ -88,8 +88,8 @@ class WanTrainingModule(DiffusionTrainingModule):
         )
         if args.stage2_loss_weight and num_history_frames != 9:
             raise ValueError("Stage 2 requires num_history_frames=9")
-        if args.stage2_loss_weight and args.trainable != ["dit"]:
-            raise ValueError("Stage 2 Phase C must use --trainable dit")
+        if args.stage2_loss_weight and set(args.trainable) not in ({"dit"}, {"dit", "action_encoder"}):
+            raise ValueError("Stage 2 Phase C trains DiT and optionally the new action encoder")
         initialize_stage2_distiller(
             self.pipe,
             teacher_path=args.stage2_teacher_path,
@@ -99,6 +99,7 @@ class WanTrainingModule(DiffusionTrainingModule):
             pred_scale=args.stage2_pred_scale,
             selected_block=args.stage2_selected_block,
             weight_schedule=args.stage2_weight_schedule,
+            target_cache=args.stage2_target_cache,
             noise_sampling=noise_sampling_contract(
                 min_timestep_boundary, max_timestep_boundary,
             ),
@@ -197,6 +198,7 @@ class WanTrainingModule(DiffusionTrainingModule):
             "min_timestep_boundary": self.min_timestep_boundary,
             "stage2_rgb": data.get("video"),
             "stage2_eef": data.get("stage2_eef"),
+            "stage2_target_embedding": data.get("stage2_target_embedding"),
         }
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
         return inputs_shared, inputs_posi, inputs_nega
@@ -208,6 +210,8 @@ class WanTrainingModule(DiffusionTrainingModule):
             for key in ("stage2_rgb", "stage2_eef"):
                 if data.get(key) is not None:
                     converted[key] = torch.as_tensor(data[key], device=device, dtype=torch.float32)
+            if data.get("stage2_target_embedding") is not None:
+                converted["stage2_target_embedding"] = data["stage2_target_embedding"].to(device)
         return converted
 
     def forward(self, data, inputs=None):
@@ -291,6 +295,7 @@ if __name__ == "__main__":
     print("[resolved_config] evaluator_path:", args.evaluator_path)
     print("[resolved_config] evaluator_loss_weight:", args.evaluator_loss_weight)
     print("[resolved_config] stage2_teacher_path:", args.stage2_teacher_path)
+    print("[resolved_config] stage2_target_cache:", args.stage2_target_cache)
     print("[resolved_config] stage2_adapter_path:", args.stage2_adapter_path)
     print("[resolved_config] stage2_loss_weight:", args.stage2_loss_weight)
     print("[resolved_config] stage2_align_scale:", args.stage2_align_scale)
@@ -322,6 +327,9 @@ if __name__ == "__main__":
     )
     if accelerator.distributed_type == DistributedType.FSDP:
         accelerator.state.fsdp_plugin.ignored_modules = [model.pipe.vae]
+        if args.stage2_loss_weight:
+            # 输入精度由 transfer_data_to_device 分别处理，避免 FSDP 提前量化教师输入和缓存目标。
+            accelerator.state.fsdp_plugin.mixed_precision_policy.cast_root_forward_inputs = False
 
     model_logger = ModelLogger(
         args.output_path,

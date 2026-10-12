@@ -23,6 +23,7 @@ def initialize_stage2_distiller(
     noise_sampling=None,
     align_scale=1.0,
     pred_scale=1.0,
+    target_cache=None,
 ):
     """Attach the frozen PEFM Teacher and Adapter without registering trainable parameters."""
     pipe.stage2_align_scale = float(align_scale)
@@ -57,7 +58,7 @@ def initialize_stage2_distiller(
             f"Selected DiT block mismatch: config={selected_block}, bundle={bundle_block}"
         )
 
-    # 辅助模块加载不改变后续 FM 采样的随机数序列；A/B/C 采用相同精度。
+    # 辅助模块加载不改变 FM 的随机数序列；教师精度由 A 的 predictor bundle 固定。
     with torch.random.fork_rng(devices=[]):
         distiller = load_stage2_distiller(
             teacher_bundle=teacher_path,
@@ -70,6 +71,9 @@ def initialize_stage2_distiller(
         )
     object.__setattr__(pipe, "stage2_distiller", distiller)
     pipe.stage2_selected_block = selected_block
+    pipe.stage2_use_target_cache = bool(target_cache)
+    if target_cache:
+        distiller.visual.cpu()  # 固定目标来自缓存，V-JEPA 不再占 GPU 或执行前向。
 
 
 def build_teacher_batch(rgb, raw_eef, time_division_factor=4):
@@ -103,10 +107,13 @@ def stage2_embedding_loss(pipe, model_output, inputs, sigma):
         return zero, {"align_mse": zero.detach(), "pred_mse": zero.detach(),
                       "stage2_weight": weight.detach(), "stage2_active": zero.detach()}
     teacher_batch = build_teacher_batch(inputs.get("stage2_rgb"), inputs.get("stage2_eef"))
+    target_embedding = inputs.get("stage2_target_embedding")
+    if pipe.stage2_use_target_cache and target_embedding is None:
+        raise KeyError("Phase C target cache is enabled but the sampled target is missing")
     with torch.autocast(device_type=model_output["hidden"].device.type, enabled=False):
         result = distiller(hidden=model_output["hidden"], dit_grid=model_output["dit_grid"],
                            valid_len=model_output["valid_len"], teacher_batch=teacher_batch,
-                           sigma=sigma, num_views=1)
+                           sigma=sigma, num_views=1, target_embedding=target_embedding)
     loss = weight * (pipe.stage2_align_scale * result["align"] + pipe.stage2_pred_scale * result["pred"])
     metrics = {"align_mse": result["align"].detach(), "pred_mse": result["pred"].detach(),
                "stage2_weight": weight.detach(), "stage2_active": result["active_fraction"].detach()}

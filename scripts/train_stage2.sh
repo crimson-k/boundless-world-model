@@ -24,7 +24,7 @@ WIDTH="${WIDTH:-256}"
 SIGMA_MAX="${SIGMA_MAX:-1.0}"
 # FM 始终保留完整噪声采样范围，辅助损失的区间由 Adapter checkpoint 固定。
 NOISE_SAMPLING='{"min_timestep_boundary":0.0,"max_timestep_boundary":1.0}'
-RUN_ROOT="${BWM_ROOT}/outputs/stage2_B"
+RUN_ROOT="${RUN_ROOT:-${BWM_ROOT}/outputs/stage2_B}"
 CAPTURE_ROOT="${RUN_ROOT}/hidden/block_${SELECTED_BLOCK}"
 CACHE_ROOT="${RUN_ROOT}/embeddings"
 PREDICTOR_BUNDLE="${PREDICTOR_BUNDLE:-${RUN_ROOT}/predictor/predictor_best.pt}"

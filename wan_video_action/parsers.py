@@ -202,6 +202,7 @@ def add_stage2_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("stage2")
     group.add_argument("--stage2_teacher_path", type=str, default=None, help="Frozen PEFM Teacher bundle.")
     group.add_argument("--stage2_adapter_path", type=str, default=None, help="Frozen PEFM Adapter bundle.")
+    group.add_argument("--stage2_target_cache", type=str, default=None, help="Packed fixed target cache; match teacher identity, precision, metadata, video and frames.")
     group.add_argument("--stage2_loss_weight", type=float, default=0.0, help="Overall weight for Stage-2 embedding losses.")
     group.add_argument("--stage2_align_scale", type=float, default=1.0)
     group.add_argument("--stage2_pred_scale", type=float, default=1.0)

@@ -1,5 +1,6 @@
 """Capture noisy DiT block states and matching GT batches for PEFM Phase B."""
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -49,6 +50,12 @@ def main():
 
     output = Path(args.capture_output)
     output.mkdir(parents=True, exist_ok=True)
+    action_state = _cpu(pipe.action_encoder.state_dict())
+    action_digest = hashlib.sha256()
+    for key, value in sorted(action_state.items()):
+        action_digest.update(key.encode())
+        action_digest.update(value.contiguous().view(torch.uint8).numpy().tobytes())
+    torch.save(action_state, output / "action_encoder_initial.pt")
     manifest_path = output / "manifest.jsonl"
     if manifest_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing capture manifest: {manifest_path}")
@@ -77,6 +84,14 @@ def main():
             )
             payload = {
                 "task": sample["task"],
+                "sample_index": index,
+                "source_video": dataset.data[index]["video"],
+                "source_action": dataset.data[index]["action"],
+                "frame_indices": sample.get("frame_indices"),
+                "metadata_path": str(Path(args.dataset_metadata_path).resolve()),
+                "model_paths": str(Path(args.model_paths).resolve()),
+                "model_seed": args.seed,
+                "action_encoder_sha256": action_digest.hexdigest(),
                 "hidden": model_output["hidden"],
                 "dit_grid": tuple(model_output["dit_grid"]),
                 "valid_len": int(model_output["valid_len"]),

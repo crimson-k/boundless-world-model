@@ -1,5 +1,9 @@
 import json
+import hashlib
+from pathlib import Path
 from typing import Iterable, Optional
+
+import torch
 
 from diffsynth.core import UnifiedDataset
 
@@ -22,6 +26,7 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         temporal_num_frames: Optional[int] = None,
         temporal_num_history_frames: int = 1,
         temporal_align_to_vae_latent: bool = False,
+        stage2_targets=None,
     ):
         self.base_path = base_path
         self.metadata_path = metadata_path
@@ -35,6 +40,7 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         self.temporal_num_history_frames = int(temporal_num_history_frames)
         self.temporal_align_to_vae_latent = bool(temporal_align_to_vae_latent)
         self.load_from_cache = False
+        self.stage2_targets = stage2_targets
         self.data = self._load_metadata(metadata_path)
         self._apply_sample_selection()
         print(f"Dataset size: {len(self.data)}, repeat: {self.repeat}, total: {len(self)}")
@@ -83,6 +89,13 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
                 data[key] = self.main_data_operator(
                     self._wrap_frame_range_metadata(data, data[key], frame_indices=frame_indices)
                 )
+        if self.stage2_targets is not None:
+            key = (source_data["video"], tuple(data["frame_indices"]))
+            target = self.stage2_targets[key]  # 不允许错配或缺失时退回另一份目标。
+            endpoints = torch.cat((torch.zeros(1, dtype=torch.long), torch.arange(4, 81, 4)))
+            raw_eef = torch.as_tensor(data["stage2_eef"], dtype=torch.float32)
+            assert torch.equal(raw_eef[:, endpoints], target["eef"]), "Cached target EEF differs from sampled data"
+            data["stage2_target_embedding"] = target["embed"]
         return data
 
     def _resolve_frame_range(self, data: dict):
@@ -182,6 +195,20 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
 def build_robotwin_train_dataset(args, metadata_path=None, repeat=None) -> RoboTwinUnifiedDataset:
     keys = tuple(args.data_keys)
 
+    targets = None
+    if args.stage2_target_cache:
+        bundle = torch.load(args.stage2_adapter_path, map_location="cpu", weights_only=False)
+        cache = torch.load(args.stage2_target_cache, map_location="cpu", weights_only=False, mmap=True)
+        assert cache["teacher_sha256"] == bundle["teacher_sha256"], "Cached target uses a different Teacher"
+        assert cache["teacher_dtype"] == bundle["teacher_dtype"], "Cached target precision differs from the trained predictor"
+        assert cache["video_shape"] == [args.num_frames, args.height, args.width] and cache["resize_mode"] == args.resize_mode, "Cached target preprocessing differs"
+        metadata_digest = hashlib.sha256(Path(metadata_path or args.dataset_metadata_path).read_bytes()).hexdigest()
+        assert metadata_digest in cache["metadata_sha256"], "Cached targets were built for different metadata"
+        targets = cache["targets"]
+        for target in targets.values():
+            assert target["embed"].dtype == getattr(torch, cache["teacher_dtype"]) and target["embed"].shape == (1, 21, bundle["predictor"]["embed_dim"])
+            assert torch.isfinite(target["embed"]).all()
+
     special_operator_map = {}
     if args.modes["text"] != "none":
         for key in ("prompt_emb", "negative_prompt_emb"):
@@ -230,6 +257,7 @@ def build_robotwin_train_dataset(args, metadata_path=None, repeat=None) -> RoboT
         temporal_num_frames=int(args.num_frames),
         temporal_num_history_frames=int(args.num_history_frames),
         temporal_align_to_vae_latent=(args.modes["vae"] == "emb"),
+        stage2_targets=targets,
     )
 
 

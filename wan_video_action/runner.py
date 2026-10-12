@@ -122,6 +122,8 @@ def launch_training_task(
                     optimizer.zero_grad()
                     completed_update = True
 
+                    if accelerator.device.type == "cuda":
+                        torch.cuda.synchronize(accelerator.device)
                     now = time.monotonic()
                     step_time = now - last_step_time
                     last_step_time = now
@@ -130,6 +132,7 @@ def launch_training_task(
                     averaged_loss_metrics = {
                         name: value / loss_count for name, value in loss_metric_totals.items()
                     }
+                    microbatches = loss_count
                     model_logger.on_step_end(
                         accelerator,
                         model,
@@ -149,6 +152,8 @@ def launch_training_task(
                         "loss": avg_loss,
                         "lr": learning_rate,
                         "grad_norm": grad_norm,
+                        "optimizer_step_seconds": step_time,
+                        "microbatches": microbatches,
                         **averaged_loss_metrics,
                     }
                     training_logger.log_step(metrics, step=model_logger.num_steps)
