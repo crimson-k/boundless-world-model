@@ -206,13 +206,19 @@ class ModelLogger(DiffSynthModelLogger):
 
         pending_state_dir = state_dir + ".pending"
         accelerator.wait_for_everyone()
-        if accelerator.is_main_process and os.path.exists(pending_state_dir):
-            shutil.rmtree(pending_state_dir)
+        if accelerator.is_main_process:
+            # states 可能是软链接；先创建实际目录，避免链接目标缺失时保存失败。
+            os.makedirs(os.path.realpath(os.path.dirname(state_dir)), exist_ok=True)
+            if os.path.exists(pending_state_dir):
+                shutil.rmtree(pending_state_dir)
         accelerator.wait_for_everyone()
         has_fsdp = getattr(accelerator.state, "fsdp_plugin", None) is not None
         state_dict_type = "SHARDED_STATE_DICT" if sharded and has_fsdp else None
         with self.fsdp_state_dict_type(accelerator, state_dict_type, offload_to_cpu=False):
-            accelerator.save_state(pending_state_dir)
+            if state_dict_type == "SHARDED_STATE_DICT":
+                self.save_fsdp_state(accelerator, pending_state_dir)
+            else:
+                accelerator.save_state(pending_state_dir)
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
             os.rename(pending_state_dir, state_dir)
@@ -222,6 +228,7 @@ class ModelLogger(DiffSynthModelLogger):
                 "batch_in_epoch": self.batch_in_epoch,
                 "state_dir": state_dir,
                 "state_dict_type": state_dict_type or "FULL_STATE_DICT",
+                "world_size": accelerator.num_processes,
             }
             os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
             with open(metadata_path, "w", encoding="utf-8") as f:
@@ -231,14 +238,50 @@ class ModelLogger(DiffSynthModelLogger):
         self._saved_state_steps.add(self.num_steps)
         return state_dir
 
+    def save_fsdp_state(self, accelerator, state_dir):
+        from torch.distributed.checkpoint import FileSystemWriter, save
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+        plugin = accelerator.state.fsdp_plugin
+        for index, model in enumerate(accelerator._models):
+            with FSDP.state_dict_type(
+                model, plugin.state_dict_type, plugin.state_dict_config, plugin.optim_state_dict_config,
+            ):
+                # PyTorch 2.8 的 writer 会保留同一文件中所有 tensor 的 CPU 副本。
+                # 每个 tensor 单独写入文件，避免保存时累计整份模型和优化器的主机内存。
+                save(
+                    {"model": model.state_dict()},
+                    storage_writer=FileSystemWriter(
+                        os.path.join(state_dir, f"pytorch_model_fsdp_{index}"),
+                        single_file_per_rank=False,
+                    ),
+                )
+                if index < len(accelerator._optimizers):
+                    save(
+                        {"optimizer": FSDP.optim_state_dict(model, accelerator._optimizers[index])},
+                        storage_writer=FileSystemWriter(
+                            os.path.join(state_dir, f"optimizer_{index}"),
+                            single_file_per_rank=False,
+                        ),
+                    )
+
+        models, optimizers = accelerator._models, accelerator._optimizers
+        accelerator._models, accelerator._optimizers = [], []
+        try:
+            accelerator.save_state(state_dir)
+        finally:
+            accelerator._models, accelerator._optimizers = models, optimizers
+
     def load_training_state(self, accelerator, state_dir):
         sharded_model_dir = os.path.join(state_dir, "pytorch_model_fsdp_0")
         if not os.path.isdir(sharded_model_dir):
             accelerator.load_state(state_dir)
             return
 
-        from torch.distributed.checkpoint import FileSystemReader, load_sharded_optimizer_state_dict
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+        from torch.distributed.checkpoint import DefaultLoadPlanner, FileSystemReader, load
+        from torch.distributed.checkpoint.state_dict import (
+            StateDictOptions, get_optimizer_state_dict, set_optimizer_state_dict,
+        )
 
         with self.fsdp_state_dict_type(
             accelerator,
@@ -254,14 +297,27 @@ class ModelLogger(DiffSynthModelLogger):
 
             for index, (model, optimizer) in enumerate(zip(accelerator._models, optimizers)):
                 optimizer_dir = os.path.join(state_dir, f"optimizer_{index}")
-                optimizer_state = load_sharded_optimizer_state_dict(
-                    model.state_dict(),
-                    optimizer_key="optimizer",
-                    storage_reader=FileSystemReader(optimizer_dir),
-                )["optimizer"]
-                optimizer_state = FSDP.optim_state_dict_to_load(
-                    model=model,
-                    optim=optimizer,
-                    optim_state_dict=optimizer_state,
-                )
-                optimizer.load_state_dict(optimizer_state)
+                optimizer = optimizer.optimizer
+                # 沿用 Stage 2-B 的加载方式，只为当前 rank 分配 Adam 状态。
+                options = StateDictOptions(full_state_dict=False, cpu_offload=False)
+                optimizer_state = get_optimizer_state_dict(model, optimizer, options=options)
+                reader = FileSystemReader(optimizer_dir)
+                paths = reader.read_metadata().planner_data
+                checkpoint = {"optimizer": optimizer_state}
+                flat_state = {}
+                # Accelerate 按字段保存 param_groups，按 checkpoint 记录的路径读取。
+                for name, path in paths.items():
+                    value = checkpoint
+                    for key in path:
+                        value = value[key]
+                    flat_state[name] = value
+                # 保留这个字典，确保 lr 等非 tensor 字段也能写回。
+                load(flat_state, storage_reader=reader, planner=DefaultLoadPlanner(
+                    flatten_state_dict=False, flatten_sharded_tensors=False,
+                ))
+                for name, path in paths.items():
+                    parent = checkpoint
+                    for key in path[:-1]:
+                        parent = parent[key]
+                    parent[path[-1]] = flat_state[name]
+                set_optimizer_state_dict(model, optimizer, optimizer_state, options=options)

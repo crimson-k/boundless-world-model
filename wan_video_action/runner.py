@@ -2,9 +2,10 @@ import datetime
 import os
 import random
 import time
+from pathlib import Path
 
 from accelerate import skip_first_batches
-from accelerate.utils import DistributedType
+from accelerate.utils import DistributedType, set_seed
 import numpy as np
 import torch
 from diffsynth.diffusion.runner import initialize_deepspeed_gradient_checkpointing
@@ -35,6 +36,7 @@ def launch_training_task(
     )
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     dataloader_kwargs = {
+        "batch_size": 1,
         "shuffle": False,
         "collate_fn": lambda x: x[0],
         "num_workers": args.dataset_num_workers,
@@ -66,7 +68,23 @@ def launch_training_task(
     if args.resume_from:
         accelerator.print(f"Resuming training from full state: {args.resume_from}")
         model_logger.load_training_state(accelerator, args.resume_from)
+        saved_world_size = len(list(Path(args.resume_from).glob("random_states_*.pkl")))
+        assert saved_world_size > 0, "Full training checkpoint must include rank RNG states"
+        if saved_world_size != accelerator.num_processes:
+            consumed_samples = model_logger.batch_in_epoch * saved_world_size
+            assert consumed_samples % accelerator.num_processes == 0, "Resume position must align to the new world size"
+            model_logger.batch_in_epoch = consumed_samples // accelerator.num_processes
+            accelerator.print(
+                f"Resharded resume: {saved_world_size} -> {accelerator.num_processes} ranks; "
+                f"batch_in_epoch={model_logger.batch_in_epoch}"
+            )
+            if accelerator.process_index >= saved_world_size:
+                set_seed(args.seed, device_specific=True)
         start_epoch = model_logger.epoch_id
+        accelerator.print(
+            f"Restored step={model_logger.num_steps}, epoch={start_epoch}, "
+            f"batch_in_epoch={model_logger.batch_in_epoch}, lr={scheduler.get_last_lr()[0]}"
+        )
 
     epoch_id = start_epoch
     skip_batches = model_logger.batch_in_epoch if args.resume_from else 0
