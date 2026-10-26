@@ -58,3 +58,4 @@ src/
 .codex/
 skills/
 AGENTS.md
+converted_dataset_*

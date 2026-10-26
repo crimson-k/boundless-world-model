@@ -1,7 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-4,5,6,7}"
+BWM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${BWM_ROOT}"
+
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export TOKENIZERS_PARALLELISM="false"
 
@@ -11,7 +14,7 @@ fi
 
 PYTHON_BIN="${PYTHON_BIN:-/home/fangxuebin/.conda/envs/BWM/bin/python}"
 MODEL_DIR="${MODEL_DIR:-/data1/common_model/modelscope/Wan-AI/Wan2.2-TI2V-5B/}"
-DATASET_DIR="${DATASET_DIR:-/data1/fangxuebin/boundless-world-model/converted_dataset_bwm_6tasks_256x192}"
+DATASET_DIR="${DATASET_DIR:-${BWM_ROOT}/converted_dataset_bwm_6tasks_256x192}"
 TRAIN_METADATA_PATH="${TRAIN_METADATA_PATH:-${DATASET_DIR}/metadata_train.jsonl}"
 VAL_METADATA_PATH="${VAL_METADATA_PATH:-${DATASET_DIR}/metadata_test.jsonl}"
 ACTION_STAT_PATH="${ACTION_STAT_PATH:-${DATASET_DIR}/stat.json}"
@@ -19,9 +22,9 @@ CONFIG_PATH="${CONFIG_PATH:-configs/train/train_wan22_ti2v_5b_action_adaln.yaml}
 ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/train/accelerate_fsdp_multi_gpu.yaml}"
 MACHINE_RANK="${MACHINE_RANK:-}"
 DATASET_NUM_WORKERS="${DATASET_NUM_WORKERS:-1}"
-MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-10000}"
+MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-16000}"
 SAVE_STEPS="${SAVE_STEPS:-2000}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-16}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
 DETERMINISTIC="${DETERMINISTIC:-0}"
 USE_WANDB="${USE_WANDB:-0}"
 USE_SWANLAB="${USE_SWANLAB:-0}"
