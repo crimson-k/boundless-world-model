@@ -3,8 +3,8 @@ import torch
 from .stage2_semantic import stage2_prior_loss
 
 
-def flow_match_forward(pipe, *, return_hidden_block=None, timestep_id=None, **inputs):
-    """Run one noisy Wan forward and return the flow loss plus optional block hidden."""
+def flow_match_forward(pipe, *, timestep_id=None, **inputs):
+    """Return the flow loss and clean latents estimated from the final velocity."""
     if "lora" in inputs:
         pipe.clear_lora(verbose=0)
         pipe.load_lora(pipe.dit, state_dict=inputs["lora"], hotload=True, verbose=0)
@@ -30,13 +30,25 @@ def flow_match_forward(pipe, *, return_hidden_block=None, timestep_id=None, **in
 
     models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
 
-    model_output = pipe.model_fn(
+    velocity_pred = pipe.model_fn(
         **models,
         **inputs,
         timestep=timestep,
-        return_hidden_block=return_hidden_block,
     )
-    velocity_pred = model_output if return_hidden_block is None else model_output["velocity"]
+    if velocity_pred.shape != input_latents.shape:
+        raise ValueError(
+            f"Final DiT velocity must match GT VAE latents, got {tuple(velocity_pred.shape)} "
+            f"and {tuple(input_latents.shape)}"
+        )
+    # add_noise 按实际传入的 timestep 查最近项；BF16 舍入后不一定仍是原抽样索引。
+    noise_timestep_id = (pipe.scheduler.timesteps - timestep.detach().cpu()).abs().argmin()
+    sigma = pipe.scheduler.sigmas[noise_timestep_id].to(device=pipe.device, dtype=torch.float32).reshape(1)
+    clean_latents = inputs["latents"].float() - sigma.reshape(-1, 1, 1, 1, 1) * velocity_pred.float()
+    if history_t > 0:
+        clean_latents = torch.cat(
+            [history_condition_latents[:, :, :history_t].float(), clean_latents[:, :, history_t:]],
+            dim=2,
+        )
 
     if pipe.action_injection_mode == "adaln" and history_t > 0:
         velocity_pred = velocity_pred[:, :, history_t:]
@@ -47,12 +59,12 @@ def flow_match_forward(pipe, *, return_hidden_block=None, timestep_id=None, **in
 
     return {
         "flow_loss": flow_loss,
-        "model_output": model_output,
+        "clean_latents": clean_latents,
         "velocity_pred": velocity_pred,
         "input_latents": input_latents,
         "history_t": history_t,
         "timestep_id": timestep_id,
-        "sigma": pipe.scheduler.sigmas[timestep_id].to(device=pipe.device, dtype=torch.float32),
+        "sigma": sigma,
     }
 
 
@@ -60,7 +72,6 @@ def FlowMatchSFTLossWanAction(pipe, **inputs):
     stage2_enabled = float(getattr(pipe, "stage2_loss_weight", 0.0)) != 0
     output = flow_match_forward(
         pipe,
-        return_hidden_block=getattr(pipe, "stage2_selected_block", None) if stage2_enabled else None,
         **inputs,
     )
     flow_loss = output["flow_loss"]
@@ -72,7 +83,7 @@ def FlowMatchSFTLossWanAction(pipe, **inputs):
 
     if stage2_enabled:
         prior_kl, stage2_weight, per_step = stage2_prior_loss(
-            pipe, output["model_output"], inputs, sigma,
+            pipe, output["clean_latents"], inputs, sigma,
         )
         pipe.loss_metrics.update({
             "prior_kl": prior_kl.detach(),

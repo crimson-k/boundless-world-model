@@ -25,7 +25,7 @@ from wan_video_action.loss import FlowMatchSFTLossWanAction
 from wan_video_action.parsers import merge_yaml_and_args, prepare_model_config, resolve_data_keys, add_general_config
 from wan_video_action.pipelines.wan_video_action import WanVideoActionPipeline
 from wan_video_action.runner import launch_training_task
-from wan_video_action.stage2_semantic import initialize_stage2_distiller, noise_sampling_contract
+from wan_video_action.stage2_semantic import initialize_stage2_distiller
 from wan_video_action.utils import set_global_seed
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -81,17 +81,12 @@ class WanTrainingModule(DiffusionTrainingModule):
         if args.stage2_loss_weight and num_history_frames != 9:
             raise ValueError("Stage 2 requires num_history_frames=9")
         if args.stage2_loss_weight and args.trainable != ["dit"]:
-            raise ValueError("Stage 2 Phase C must use --trainable dit")
+            raise ValueError("Stage 2 BWM training must use --trainable dit")
         initialize_stage2_distiller(
             self.pipe,
             teacher_path=args.stage2_teacher_path,
-            adapter_path=args.stage2_adapter_path,
             loss_weight=args.stage2_loss_weight,
-            selected_block=args.stage2_selected_block,
             weight_schedule=args.stage2_weight_schedule,
-            noise_sampling=noise_sampling_contract(
-                min_timestep_boundary, max_timestep_boundary,
-            ),
         )
         self._original_trainable_param_names = super().trainable_param_names()
 
@@ -185,7 +180,6 @@ class WanTrainingModule(DiffusionTrainingModule):
             "vace_scale": 1,
             "max_timestep_boundary": self.max_timestep_boundary,
             "min_timestep_boundary": self.min_timestep_boundary,
-            "stage2_rgb": data.get("video"),
             "stage2_eef": data.get("stage2_eef"),
         }
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
@@ -242,6 +236,9 @@ if __name__ == "__main__":
     if args.config is not None:
         args = merge_yaml_and_args(args.config, parser, args)
 
+    if args.batch_size != 1:
+        raise ValueError("BWM training requires batch_size=1; adjust gradient_accumulation_steps instead")
+
     set_global_seed(args.seed, deterministic=args.deterministic)
     model_config = prepare_model_config(args)
     args = resolve_data_keys(args, stage="train")
@@ -270,9 +267,7 @@ if __name__ == "__main__":
     print("[resolved_config] max_train_steps:", args.max_train_steps)
     print("[resolved_config] deterministic:", args.deterministic)
     print("[resolved_config] stage2_teacher_path:", args.stage2_teacher_path)
-    print("[resolved_config] stage2_adapter_path:", args.stage2_adapter_path)
     print("[resolved_config] stage2_loss_weight:", args.stage2_loss_weight)
-    print("[resolved_config] stage2_selected_block:", args.stage2_selected_block)
     print("[resolved_config] stage2_weight_schedule:", args.stage2_weight_schedule)
     loggers = [name for name in ("wandb", "swanlab") if getattr(args, f"use_{name}", False)]
     use_fsdp = os.environ.get("ACCELERATE_USE_FSDP", "false").lower() == "true"
@@ -285,6 +280,11 @@ if __name__ == "__main__":
         mixed_precision=args.mixed_precision,
         log_with=loggers or None,
         kwargs_handlers=[accelerate.DistributedDataParallelKwargs(find_unused_parameters=args.find_unused_parameters)],
+    )
+    accelerator.print(
+        f"[resolved_config] world_size={accelerator.num_processes} "
+        f"batch_size={args.batch_size} gradient_accumulation_steps={args.gradient_accumulation_steps} "
+        f"global_batch={accelerator.num_processes * args.batch_size * args.gradient_accumulation_steps}"
     )
 
     train_dataset = build_train_dataset(args)

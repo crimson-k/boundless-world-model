@@ -78,13 +78,8 @@ def resolve_data_keys(args, stage="train"):
     if args.modes["text"] == "emb":
         keys.extend(["prompt_emb", "negative_prompt_emb"])
 
-    stage2_enabled = (
-        float(getattr(args, "stage2_loss_weight", 0.0) or 0.0) > 0
-        or bool(getattr(args, "stage2_capture", False))
-    )
+    stage2_enabled = float(getattr(args, "stage2_loss_weight", 0.0) or 0.0) > 0
     if stage == "train" and stage2_enabled:
-        if "video" not in keys:
-            keys.append("video")
         keys.append("stage2_eef")
 
     args.data_keys = keys
@@ -194,9 +189,7 @@ def add_gradient_config(parser: argparse.ArgumentParser):
 def add_stage2_config(parser: argparse.ArgumentParser):
     group = parser.add_argument_group("stage2")
     group.add_argument("--stage2_teacher_path", type=str, default=None, help="Frozen PEFM Teacher bundle.")
-    group.add_argument("--stage2_adapter_path", type=str, default=None, help="Frozen PEFM Adapter bundle.")
     group.add_argument("--stage2_loss_weight", type=float, default=0.0, help="Base weight for Stage-2 prior KL.")
-    group.add_argument("--stage2_selected_block", type=int, default=None, help="Zero-based DiT block index; defaults to the Adapter contract.")
     group.add_argument(
         "--stage2_weight_schedule", type=str, default="constant",
         choices=["constant", "one_minus_sigma"],

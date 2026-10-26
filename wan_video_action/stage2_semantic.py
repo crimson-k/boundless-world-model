@@ -1,6 +1,4 @@
-"""BWM ownership of the Phase-C V-JEPA--RSSM semantic loss."""
-
-from collections.abc import Mapping
+"""用最终向量场恢复的 clean latent 驱动冻结 evaluator，BWM 负责 KL 归约。"""
 
 import torch
 
@@ -16,23 +14,18 @@ def initialize_stage2_distiller(
     pipe,
     *,
     teacher_path,
-    adapter_path,
     loss_weight,
-    selected_block=None,
     weight_schedule="constant",
-    noise_sampling=None,
 ):
-    """Attach the frozen PEFM Teacher and Adapter without registering trainable parameters."""
+    """挂载冻结 evaluator；不将其注册到 BWM 的优化器或 FSDP 模型树中。"""
     pipe.stage2_loss_weight = float(loss_weight)
     pipe.stage2_weight_schedule = str(weight_schedule)
     if pipe.stage2_loss_weight == 0:
         object.__setattr__(pipe, "stage2_distiller", None)
-        pipe.stage2_selected_block = None
         return
-    if not teacher_path or not adapter_path:
+    if not teacher_path:
         raise ValueError(
-            "stage2_teacher_path and stage2_adapter_path are required when "
-            "stage2_loss_weight is nonzero"
+            "stage2_teacher_path is required when stage2_loss_weight is nonzero"
         )
 
     try:
@@ -43,45 +36,40 @@ def initialize_stage2_distiller(
             "or install it in the BWM environment."
         ) from error
 
-    bundle = torch.load(adapter_path, map_location="cpu", weights_only=False)
-    if not isinstance(bundle, Mapping):
-        raise ValueError("Stage 2 Adapter bundle must be a mapping")
-    bundle_block = int(bundle["selected_block"])
-    selected_block = bundle_block if selected_block is None else int(selected_block)
-    if selected_block != bundle_block:
-        raise ValueError(
-            f"Selected DiT block mismatch: config={selected_block}, bundle={bundle_block}"
-        )
-
     distiller = load_stage2_distiller(
         teacher_bundle=teacher_path,
-        adapter_bundle=adapter_path,
         device=pipe.device,
-        dtype=pipe.torch_dtype,
-        dit_dim=int(pipe.dit.dim),
-        selected_block=selected_block,
-        noise_sampling=noise_sampling,
+        dtype=torch.float32,
     )
     object.__setattr__(pipe, "stage2_distiller", distiller)
     object.__setattr__(
         pipe, "stage2_action_delta_stats",
         getattr(distiller.teacher, "action_delta_stats", None),
     )
-    pipe.stage2_selected_block = selected_block
 
 
-def build_teacher_batch(rgb, raw_eef, time_division_factor=4, action_delta_stats=None):
-    """Create the fixed 21-group Teacher input from raw BWM sample tensors."""
-    if rgb is None or raw_eef is None:
-        raise KeyError("Stage 2 requires GT video and unnormalized absolute EEF data")
-    from pefm.data import stage2_teacher_batch
+def build_teacher_batch(clean_latents, raw_eef, time_division_factor=4, action_delta_stats=None):
+    """直接使用本次 BWM 输入的 GT VAE latent，并按相同采样帧分组动作。"""
+    if clean_latents is None or raw_eef is None:
+        raise KeyError("Stage 2 requires GT VAE latents and unnormalized absolute EEF data")
+    from pefm.data import normalize_action_delta, relative_eef_actions
 
-    rgb = torch.as_tensor(rgb)
-    raw_eef = torch.as_tensor(raw_eef, device=rgb.device, dtype=torch.float32)
-    return stage2_teacher_batch(
-        rgb, raw_eef, time_division_factor=time_division_factor,
-        action_delta_stats=action_delta_stats,
-    )
+    raw_eef = torch.as_tensor(raw_eef, device=clean_latents.device, dtype=torch.float32)
+    if raw_eef.ndim == 2:
+        raw_eef = raw_eef.unsqueeze(0)
+    batch, _, groups, _, _ = clean_latents.shape
+    if raw_eef.ndim != 3 or raw_eef.shape[0] != batch or raw_eef.shape[-1] != 14:
+        raise ValueError("Expected absolute EEF [B,F,14] matching clean latents batch")
+    frames = 1 + (groups - 1) * time_division_factor
+    if raw_eef.shape[1] == frames:
+        raw_eef = raw_eef[:, ::time_division_factor]
+    elif raw_eef.shape[1] != groups:
+        raise ValueError(f"Expected {frames} EEF frames or {groups} grouped endpoints")
+    return {
+        "clean_latents": clean_latents,
+        "action_delta": normalize_action_delta(relative_eef_actions(raw_eef), action_delta_stats),
+        "reset": (torch.arange(groups, device=clean_latents.device) == 0).expand(batch, -1),
+    }
 
 
 def categorical_prior_kl(target_logits, student_logits):
@@ -105,25 +93,25 @@ def semantic_weight(base_weight, sigma, schedule):
     return multiplier * float(base_weight)
 
 
-def stage2_prior_loss(pipe, model_output, inputs, sigma):
-    """Run the frozen PEFM path and reduce its 17 paired logits on the BWM side."""
+def stage2_prior_loss(pipe, clean_latents, inputs, sigma):
+    """恢复 latent → 冻结 aggregator/RSSM → 17 步 prior KL；梯度回到 DiT。"""
     distiller = getattr(pipe, "stage2_distiller", None)
     if distiller is None:
         raise ValueError("Stage 2 loss is enabled but no distiller is attached")
     teacher_batch = build_teacher_batch(
-        inputs.get("stage2_rgb"),
+        inputs.get("input_latents"),
         inputs.get("stage2_eef"),
         time_division_factor=4,
         action_delta_stats=getattr(pipe, "stage2_action_delta_stats", None),
     )
-    result = distiller(
-        hidden=model_output["hidden"],
-        dit_grid=model_output["dit_grid"],
-        valid_len=model_output["valid_len"],
-        teacher_batch=teacher_batch,
-        num_views=1,
-        phase="bwm",
-    )
+    if next(distiller.parameters()).device != clean_latents.device:
+        distiller.to(device=clean_latents.device)
+    # BWM 的 BF16 autocast 不应改变已训练 FP32 evaluator 的计算精度。
+    with torch.autocast(device_type=clean_latents.device.type, enabled=False):
+        result = distiller(
+            clean_latents, teacher_batch["clean_latents"],
+            teacher_batch["action_delta"], teacher_batch["reset"],
+        )
     prior = result["prior"]
     per_step = categorical_prior_kl(
         prior["gt_posterior"], prior["generated_prior"],

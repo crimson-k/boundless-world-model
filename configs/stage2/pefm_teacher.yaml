@@ -1,5 +1,12 @@
 dataset: ${oc.env:DATASET_DIR}
+reward_labels: ${oc.env:REWARD_LABELS}
 vjepa_checkpoint: ${oc.env:VJEPA_CHECKPOINT}
+vjepa_dtype: "bfloat16"
+vae_checkpoint: "/data1/common_model/modelscope/Wan-AI/Wan2.2-TI2V-5B/Wan2.2_VAE.pth"
+vae_dtype: "bfloat16"
+height: 192
+width: 256
+resize_mode: "crop"
 output: ${oc.env:TEACHER_OUTPUT}
 # The 192x256 videos produce a 12x16 V-JEPA patch grid (patch size 16).
 rgb_grid: [12, 16]
@@ -16,10 +23,13 @@ lr: 4e-5
 weight_decay: 0.01
 max_grad_norm: 0.5
 max_batches: 0
-freeze_aggregator_epoch: 10
 eval_mode: false
 rssm_model_size: "src/r2dreamer/configs/model/size12M.yaml"
-freeze:
-  - "vjepa_adapter.encoder"
+freeze: []
 model:
   kl_free: 0.1
+  loss_scales:
+    relation: 1.0
+    event: 1.0
+    motion: 1.0
+    interaction: 1.0
