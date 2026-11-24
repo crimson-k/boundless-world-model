@@ -80,8 +80,8 @@ class WanTrainingModule(DiffusionTrainingModule):
         )
         if args.stage2_loss_weight and num_history_frames != 9:
             raise ValueError("Stage 2 requires num_history_frames=9")
-        if args.stage2_loss_weight and args.trainable != ["dit"]:
-            raise ValueError("Stage 2 BWM training must use --trainable dit")
+        if args.stage2_loss_weight and set(args.trainable) not in ({"dit"}, {"dit", "action_encoder"}):
+            raise ValueError("Stage 2 BWM training supports dit with an optional action_encoder")
         initialize_stage2_distiller(
             self.pipe,
             teacher_path=args.stage2_teacher_path,
@@ -129,8 +129,9 @@ class WanTrainingModule(DiffusionTrainingModule):
         return inputs_shared
 
     def get_pipeline_inputs(self, data):
-        if self.use_precomputed_latents:
-            precomputed_latents = data["latents"]
+        cached = data.get("cached_vae_latents")
+        if self.use_precomputed_latents or cached is not None:
+            precomputed_latents = data["latents"] if cached is None else cached["input_latents"]
             if not torch.is_tensor(precomputed_latents) or precomputed_latents.ndim != 5:
                 raise TypeError(
                     f"Expected latent tensor with shape (V,C,T,H,W), got {type(precomputed_latents).__name__}."
@@ -164,6 +165,7 @@ class WanTrainingModule(DiffusionTrainingModule):
         inputs_shared = {
             "input_video": input_video,
             "precomputed_latents": precomputed_latents,
+            "precomputed_history_latents": None if cached is None else cached["history_latents"],
             "action": data.get("action"),
             "height": height,
             "width": width,
@@ -273,7 +275,7 @@ if __name__ == "__main__":
     use_fsdp = os.environ.get("ACCELERATE_USE_FSDP", "false").lower() == "true"
     accumulation_plugin = accelerate.utils.GradientAccumulationPlugin(
         num_steps=args.gradient_accumulation_steps,
-        sync_each_batch=use_fsdp,
+        sync_each_batch=use_fsdp and bool(args.fsdp_sync_each_batch),
     )
     accelerator = accelerate.Accelerator(
         gradient_accumulation_plugin=accumulation_plugin,

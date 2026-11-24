@@ -303,3 +303,25 @@ Contributors are listed in alphabetical order by English name.
 If you find **BWM** is useful in your research or applications, please consider giving us a **star** 🌟.
 
 ---
+
+
+## Stage 2 训练加速
+
+`scripts/train_stage2.sh bwm` 默认使用 `SHARD_GRAD_OP`、每个 update 同步一次梯度、fused AdamW 和 `expandable_segments`。每卡 batch 仍为 1，通过 `BWM_GRADIENT_ACCUMULATION_STEPS` 调整累积次数。双任务并跑时显存接近满载；测速需要让两组同时运行，不能用单任务速度代替。
+
+可先按训练 metadata 的每个窗口预提取 VAE latent。完整视频和历史帧分别编码，扩散噪声及历史加噪仍在训练时采样。以下命令使用与默认入口相同的数据配置：
+
+```bash
+python -m accelerate.commands.launch --multi_gpu --num_processes 8 --mixed_precision bf16 \
+  scripts/precompute_stage2_latents.py \
+  --config configs/train/train_wan22_ti2v_5b_action_adaln.yaml \
+  --model_paths "$MODEL_DIR" --dataset_base_path "$DATASET_DIR" \
+  --dataset_metadata_path "$DATASET_DIR/metadata_train.jsonl" \
+  --val_dataset_metadata_path "$DATASET_DIR/metadata_test.jsonl" \
+  --action_stat_path "$DATASET_DIR/stat.json" \
+  --vae_latent_cache_dir outputs/cache/stage2_vae_6tasks_81f_256x192
+```
+
+默认入口在上述目录的训练、验证缓存均完成时自动使用缓存；其他目录可通过 `BWM_VAE_LATENT_CACHE_DIR` 指定，设为空字符串可禁用。缓存会检查 metadata、视频文件、VAE 权重文件身份以及预处理参数，配置不符时拒绝使用。
+
+可通过 `BWM_ACCELERATE_CONFIG=configs/stage2/accelerate_fsdp_multi_gpu.yaml BWM_FSDP_SYNC_EACH_BATCH=1 BWM_FUSED_ADAMW=0 BWM_VAE_LATENT_CACHE_DIR=""` 恢复原计算路径。已有完整 checkpoint 继续通过 `BWM_RESUME_FROM` 恢复；旧 AdamW 状态会保留，并切换为 fused 更新。

@@ -28,13 +28,17 @@ def launch_training_task(
     optimizer_kwargs = {}
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
         optimizer_kwargs = {"foreach": False, "fused": False}
+    if getattr(args, "fused_adamw", False):
+        if accelerator.distributed_type == DistributedType.DEEPSPEED:
+            raise ValueError("fused_adamw is only supported by the native PyTorch optimizer")
+        optimizer_kwargs["fused"] = True
     optimizer = torch.optim.AdamW(
         model.trainable_modules(),
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
         **optimizer_kwargs,
     )
-    scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
     dataloader_kwargs = {
         "batch_size": 1,
         "shuffle": False,
@@ -68,6 +72,14 @@ def launch_training_task(
     if args.resume_from:
         accelerator.print(f"Resuming training from full state: {args.resume_from}")
         model_logger.load_training_state(accelerator, args.resume_from)
+        if getattr(args, "fused_adamw", False):
+            # Checkpoint 中的旧 param_groups 会覆盖优化器构造参数。
+            for group in optimizer.param_groups:
+                group.update(fused=True, foreach=False)
+                for parameter in group["params"]:
+                    state = optimizer.state.get(parameter, {})
+                    if "step" in state:
+                        state["step"] = state["step"].to(parameter.device)
         saved_world_size = len(list(Path(args.resume_from).glob("random_states_*.pkl")))
         assert saved_world_size > 0, "Full training checkpoint must include rank RNG states"
         if saved_world_size != accelerator.num_processes:

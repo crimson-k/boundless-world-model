@@ -91,7 +91,7 @@ def FlowMatchSFTLossWanAction(pipe, **inputs):
         })
         pipe.loss_metrics.update({
             f"prior_kl_t{logical_step:02d}": per_step[:, offset].mean()
-            for offset, logical_step in enumerate(range(4, 21))
+            for offset, logical_step in enumerate(range(4, 4 + per_step.shape[1]))
         })
         return flow_loss + stage2_weight * prior_kl
 

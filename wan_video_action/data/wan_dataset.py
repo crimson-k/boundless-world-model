@@ -1,4 +1,8 @@
 import json
+from pathlib import Path
+import torch
+
+from .latent_cache import cache_settings, metadata_digest, source_fingerprint
 from typing import Iterable, Optional
 
 from diffsynth.core import UnifiedDataset
@@ -22,6 +26,8 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         temporal_num_frames: Optional[int] = None,
         temporal_num_history_frames: int = 1,
         temporal_align_to_vae_latent: bool = False,
+        vae_latent_cache_dir=None,
+        vae_cache_settings=None,
     ):
         self.base_path = base_path
         self.metadata_path = metadata_path
@@ -34,6 +40,16 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         self.temporal_num_frames = None if temporal_num_frames is None else int(temporal_num_frames)
         self.temporal_num_history_frames = int(temporal_num_history_frames)
         self.temporal_align_to_vae_latent = bool(temporal_align_to_vae_latent)
+        self.vae_latent_cache_dir = None
+        if vae_latent_cache_dir:
+            if sample_indices is not None:
+                raise ValueError("Latent cache requires the original metadata row order")
+            self.vae_latent_cache_dir = Path(vae_latent_cache_dir) / Path(metadata_path).stem
+            manifest = json.loads((self.vae_latent_cache_dir / "manifest.json").read_text())
+            if (manifest["metadata_sha256"] != metadata_digest(metadata_path)
+                    or manifest["settings"] != vae_cache_settings
+                    or manifest["source_fingerprint"] != source_fingerprint(metadata_path, base_path)):
+                raise ValueError("VAE latent cache does not match this metadata/configuration")
         self.load_from_cache = False
         self.data = self._load_metadata(metadata_path)
         self._apply_sample_selection()
@@ -70,8 +86,15 @@ class RoboTwinUnifiedDataset(UnifiedDataset):
         frame_indices = None if temporal_info is None else temporal_info.get("frame_indices")
         if temporal_info is not None:
             data.update(temporal_info)
+        if self.vae_latent_cache_dir is not None:
+            cached = torch.load(self.vae_latent_cache_dir / f"{int(data_id) % len(self.data):06d}.pt", map_location="cpu", weights_only=True)
+            if cached["frame_indices"] != frame_indices:
+                raise ValueError("Cached VAE window differs from current temporal sampling")
+            data["cached_vae_latents"] = cached
         source_data = data.copy()
         for key in self.data_file_keys:
+            if key == "video" and self.vae_latent_cache_dir is not None:
+                continue
             if key in self.special_operator_map:
                 operator = self.special_operator_map[key]
                 source_key = getattr(operator, "source_key", key)
@@ -230,6 +253,8 @@ def build_robotwin_train_dataset(args, metadata_path=None, repeat=None) -> RoboT
         temporal_num_frames=int(args.num_frames),
         temporal_num_history_frames=int(args.num_history_frames),
         temporal_align_to_vae_latent=(args.modes["vae"] == "emb"),
+        vae_latent_cache_dir=getattr(args, "vae_latent_cache_dir", None),
+        vae_cache_settings=cache_settings(args) if getattr(args, "vae_latent_cache_dir", None) else None,
     )
 
 

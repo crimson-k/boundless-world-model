@@ -1,0 +1,72 @@
+# Base inference: 9 history frames + 32 predicted frames per chunk.
+# This file stores public, reproducible inference parameters only.
+# Keep machine-local paths in scripts/local.sh.
+
+# ============================================================================
+# Dataset Configuration
+# ============================================================================
+dataset:
+  dataset_name: "robotwin"
+  dataset_base_path: ""
+  dataset_metadata_path: null
+  data_keys: ["video", "action"]
+
+# ============================================================================
+# Video Configuration
+# ============================================================================
+video:
+  height: 192
+  width: 256
+  max_pixels: 16777216
+  num_frames: 41
+  resize_mode: "crop"
+  num_history_frames: 9
+  time_division_factor: 4
+  time_division_remainder: 1
+  spatial_division_factor: 32
+
+# ============================================================================
+# Model Configuration
+# ============================================================================
+model:
+  model_paths: ""
+  model_config_path: "configs/model/wan2_2_ti2v_5b.yaml"
+  weights: ["dit", "vae"]
+  modes:
+    dit: "default"
+    text: "none"
+    vae: "raw"
+    image: "none"
+    action: "adaln"
+
+# ============================================================================
+# Action Configuration
+# ============================================================================
+action:
+  # Code-facing alias. LoadCobotAction maps eef_abs to dataset key state_pose.
+  action_type: "eef_abs"
+  action_stat_path: null
+  action_dim: 14
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
+training:
+  trainable: []
+  seed: 42
+  mixed_precision: "bf16"
+
+output:
+  output_path: "./outputs/inference"
+  ckpt_path: null
+
+# ============================================================================
+# Inference Configuration
+# ============================================================================
+infer:
+  cfg_scale: 1.0
+  num_inference_steps: 50
+  fps: 30
+  quality: 5
+  start_index: 0
+  max_samples: 0

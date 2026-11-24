@@ -451,6 +451,7 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
             input_params=(
                 "input_video",
                 "precomputed_latents",
+                "precomputed_history_latents",
                 "input_latents",
                 "latents",
                 "noise",
@@ -508,13 +509,17 @@ class WanVideoUnit_ImageEmbedderFused(PipelineUnit):
         tiled,
         tile_size,
         tile_stride,
+        precomputed_history_latents=None,
     ):
         if not getattr(pipe.dit, "fuse_vae_embedding_in_latents", False):
             return {}
 
         if precomputed_latents is not None:
             target_history = max(1, (int(num_history_frames) - 1) // 4 + 1)
-            z = input_latents[:, :, :target_history].clone()
+            if precomputed_history_latents is None:
+                z = input_latents[:, :, :target_history].clone()
+            else:
+                z = rearrange(precomputed_history_latents.to(device=pipe.device, dtype=pipe.torch_dtype), "v c t h w -> 1 c t (v h) w").clone()
             history_t = z.shape[2]
             latents[:, :, :history_t] = z
 

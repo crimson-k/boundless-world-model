@@ -94,7 +94,7 @@ def semantic_weight(base_weight, sigma, schedule):
 
 
 def stage2_prior_loss(pipe, clean_latents, inputs, sigma):
-    """恢复 latent → 冻结 aggregator/RSSM → 17 步 prior KL；梯度回到 DiT。"""
+    """恢复 latent → 冻结 aggregator/RSSM → 未来 prior KL；梯度回到 DiT。"""
     distiller = getattr(pipe, "stage2_distiller", None)
     if distiller is None:
         raise ValueError("Stage 2 loss is enabled but no distiller is attached")

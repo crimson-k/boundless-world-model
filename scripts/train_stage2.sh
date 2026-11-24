@@ -29,9 +29,14 @@ STAGE2_LOSS_WEIGHT="${STAGE2_LOSS_WEIGHT:-0.1}"
 STAGE2_WEIGHT_SCHEDULE="${STAGE2_WEIGHT_SCHEDULE:-constant}"
 BWM_OUTPUT="${BWM_OUTPUT:-${BWM_ROOT}/outputs/training/stage2_latent_evaluator}"
 BWM_MAX_TRAIN_STEPS="${BWM_MAX_TRAIN_STEPS:-8000}"
+BWM_LEARNING_RATE="${BWM_LEARNING_RATE:-1e-5}"
 BWM_SAVE_STEPS="${BWM_SAVE_STEPS:-2000}"
 BWM_GRADIENT_ACCUMULATION_STEPS="${BWM_GRADIENT_ACCUMULATION_STEPS:-8}"
 BWM_RESUME_FROM="${BWM_RESUME_FROM:-}"
+BWM_ACCELERATE_CONFIG="${BWM_ACCELERATE_CONFIG:-${BWM_ROOT}/configs/stage2/accelerate_fsdp_fast_multi_gpu.yaml}"
+BWM_FSDP_SYNC_EACH_BATCH="${BWM_FSDP_SYNC_EACH_BATCH:-0}"
+BWM_FUSED_ADAMW="${BWM_FUSED_ADAMW:-1}"
+BWM_VAE_LATENT_CACHE_DIR="${BWM_VAE_LATENT_CACHE_DIR-auto}"
 BWM_MAIN_PROCESS_PORT="${BWM_MAIN_PROCESS_PORT:-29500}"
 
 export DATASET_DIR TEACHER_OUTPUT VJEPA_CHECKPOINT REWARD_LABELS
@@ -60,9 +65,24 @@ run_bwm() {
     test -d "${BWM_RESUME_FROM}"
     resume_args=(--resume_from "${BWM_RESUME_FROM}")
   fi
+  local performance_args=(--fsdp_sync_each_batch "${BWM_FSDP_SYNC_EACH_BATCH}")
+  if [ "${BWM_FUSED_ADAMW}" = "1" ]; then
+    performance_args+=(--fused_adamw)
+  fi
+  if [ "${BWM_VAE_LATENT_CACHE_DIR}" = "auto" ]; then
+    local cached_default="${BWM_ROOT}/outputs/cache/stage2_vae_6tasks_81f_256x192"
+    BWM_VAE_LATENT_CACHE_DIR=""
+    if [ -f "${cached_default}/metadata_train/manifest.json" ] && [ -f "${cached_default}/metadata_test/manifest.json" ]; then
+      BWM_VAE_LATENT_CACHE_DIR="${cached_default}"
+    fi
+  fi
+  if [ -n "${BWM_VAE_LATENT_CACHE_DIR}" ]; then
+    performance_args+=(--vae_latent_cache_dir "${BWM_VAE_LATENT_CACHE_DIR}")
+  fi
+  export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
   cd "${BWM_ROOT}"
   "${PYTHON_BIN}" -m accelerate.commands.launch \
-    --config_file "${BWM_ROOT}/configs/stage2/accelerate_fsdp_multi_gpu.yaml" \
+    --config_file "${BWM_ACCELERATE_CONFIG}" \
     --main_process_port "${BWM_MAIN_PROCESS_PORT}" \
     scripts/train.py \
     --config "${BWM_CONFIG}" \
@@ -75,6 +95,7 @@ run_bwm() {
     --stage2_teacher_path "${TEACHER_BUNDLE}" \
     --stage2_loss_weight "${STAGE2_LOSS_WEIGHT}" \
     --stage2_weight_schedule "${STAGE2_WEIGHT_SCHEDULE}" \
+    --learning_rate "${BWM_LEARNING_RATE}" \
     --max_train_steps "${BWM_MAX_TRAIN_STEPS}" \
     --save_steps "${BWM_SAVE_STEPS}" \
     --batch_size 1 \
@@ -82,6 +103,7 @@ run_bwm() {
     --output_path "${BWM_OUTPUT}" \
     --min_timestep_boundary "${MIN_TIMESTEP_BOUNDARY}" \
     --max_timestep_boundary "${MAX_TIMESTEP_BOUNDARY}" \
+    "${performance_args[@]}" \
     "${resume_args[@]}"
 }
 
